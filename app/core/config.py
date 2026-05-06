@@ -19,6 +19,8 @@ from typing import (
 
 from dotenv import load_dotenv
 
+from app.services.llm_models import DEFAULT_CONSENSUS_MODEL_NAMES
+
 
 # Define environment types
 class Environment(str, Enum):
@@ -148,11 +150,18 @@ class Settings:
         self.LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
 
         # LangGraph Configuration
-        self.OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-        self.DEFAULT_LLM_MODEL = os.getenv("DEFAULT_LLM_MODEL", "gpt-5-mini")
+        self.OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+        # Alias for OpenAI SDK compatibility: langchain-openai validates api_key and falls
+        # back to OPENAI_API_KEY env var when an empty string is passed.
+        if self.OPENROUTER_API_KEY:
+            os.environ.setdefault("OPENAI_API_KEY", self.OPENROUTER_API_KEY)
+        # Backward compat: prefer LLM_BASE_URL, fallback to OPENAI_BASE_URL, default OpenRouter
+        self.LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
+        self.DEFAULT_LLM_MODEL = os.getenv("DEFAULT_LLM_MODEL", "gpt-4o")
         self.DEFAULT_LLM_TEMPERATURE = float(os.getenv("DEFAULT_LLM_TEMPERATURE", "0.2"))
         self.MAX_TOKENS = int(os.getenv("MAX_TOKENS", "2000"))
         self.MAX_LLM_CALL_RETRIES = int(os.getenv("MAX_LLM_CALL_RETRIES", "3"))
+        self.CONSENSUS_MODELS = parse_list_from_env("CONSENSUS_MODELS", DEFAULT_CONSENSUS_MODEL_NAMES)
 
         # Long term memory Configuration
         self.LONG_TERM_MEMORY_MODEL = os.getenv("LONG_TERM_MEMORY_MODEL", "gpt-5-nano")
@@ -177,6 +186,21 @@ class Settings:
         self.POSTGRES_POOL_SIZE = int(os.getenv("POSTGRES_POOL_SIZE", "20"))
         self.POSTGRES_MAX_OVERFLOW = int(os.getenv("POSTGRES_MAX_OVERFLOW", "10"))
         self.CHECKPOINT_TABLES = ["checkpoint_blobs", "checkpoint_writes", "checkpoints"]
+
+        # TikTok Ads Configuration
+        self.TIKTOK_APP_ID = os.getenv("TIKTOK_APP_ID", "")
+        self.TIKTOK_APP_SECRET = os.getenv("TIKTOK_APP_SECRET", "")
+        self.TIKTOK_ACCESS_TOKEN = os.getenv("TIKTOK_ACCESS_TOKEN", "")
+        self.TIKTOK_ADVERTISER_ID = os.getenv("TIKTOK_ADVERTISER_ID", "")
+
+        # Google Drive Configuration (for creative intake)
+        self.GOOGLE_DRIVE_ACCESS_TOKEN = os.getenv("GOOGLE_DRIVE_ACCESS_TOKEN", "")
+        self.GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "")
+
+        # Slack Configuration
+        self.SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "")       # xoxb-...
+        self.SLACK_APP_TOKEN = os.getenv("SLACK_APP_TOKEN", "")        # xapp-... (Socket Mode)
+        self.SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET", "")
 
         # Rate Limiting Configuration
         self.RATE_LIMIT_DEFAULT = parse_list_from_env("RATE_LIMIT_DEFAULT", ["200 per day", "50 per hour"])
@@ -203,7 +227,7 @@ class Settings:
         # Evaluation Configuration
         self.EVALUATION_LLM = os.getenv("EVALUATION_LLM", "gpt-5")
         self.EVALUATION_BASE_URL = os.getenv("EVALUATION_BASE_URL", "https://api.openai.com/v1")
-        self.EVALUATION_API_KEY = os.getenv("EVALUATION_API_KEY", self.OPENAI_API_KEY)
+        self.EVALUATION_API_KEY = os.getenv("EVALUATION_API_KEY", self.OPENROUTER_API_KEY)
         self.EVALUATION_SLEEP_TIME = int(os.getenv("EVALUATION_SLEEP_TIME", "10"))
 
         # Apply environment-specific settings

@@ -38,6 +38,8 @@ dependencies = [
     "tenacity>=9.1.2",
     "mem0ai>=1.0.0",
     "uvloop>=0.22.1",
+    "httpx>=0.28.1",
+    "slack-bolt>=1.21.0",
 ]
 
 [project.optional-dependencies]

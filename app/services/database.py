@@ -21,6 +21,7 @@ from app.core.config import (
 )
 from app.core.logging import logger
 from app.models.session import Session as ChatSession
+from app.models.slack_user_link import SlackUserLink
 from app.models.user import User
 
 
@@ -87,6 +88,15 @@ class DatabaseService:
             logger.info("user_created", email=email)
             return user
 
+    async def get_or_create_user_by_email(self, email: str, password: str) -> User:
+        """Fetch user by email or create if not exists."""
+
+        existing = await self.get_user_by_email(email)
+        if existing:
+            return existing
+
+        return await self.create_user(email=email, password=password)
+
     async def get_user(self, user_id: int) -> Optional[User]:
         """Get a user by ID.
 
@@ -113,6 +123,32 @@ class DatabaseService:
             statement = select(User).where(User.email == email)
             user = session.exec(statement).first()
             return user
+
+    async def get_slack_link(self, slack_user_id: str) -> Optional[SlackUserLink]:
+        """Get Slack link for a given Slack user id."""
+
+        with Session(self.engine) as session:
+            stmt = select(SlackUserLink).where(SlackUserLink.slack_user_id == slack_user_id)
+            link = session.exec(stmt).first()
+            return link
+
+    async def create_or_update_slack_link(self, slack_user_id: str, user_id: int, email: str = "") -> SlackUserLink:
+        """Create or update a Slack link record."""
+
+        with Session(self.engine) as session:
+            stmt = select(SlackUserLink).where(SlackUserLink.slack_user_id == slack_user_id)
+            link = session.exec(stmt).first()
+            if link:
+                link.user_id = user_id
+                link.email = email or link.email
+            else:
+                link = SlackUserLink(slack_user_id=slack_user_id, user_id=user_id, email=email)
+                session.add(link)
+
+            session.commit()
+            session.refresh(link)
+            logger.info("slack_user_link_saved", slack_user_id=slack_user_id, user_id=user_id, email=email)
+            return link
 
     async def delete_user_by_email(self, email: str) -> bool:
         """Delete a user by email.

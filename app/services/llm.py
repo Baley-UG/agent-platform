@@ -7,6 +7,14 @@ from typing import (
     Optional,
 )
 
+from tenacity import (
+    before_sleep_log,
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
+
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage
 from langchain_openai import ChatOpenAI
@@ -16,19 +24,27 @@ from openai import (
     OpenAIError,
     RateLimitError,
 )
-from tenacity import (
-    before_sleep_log,
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
+def _log_retry(retry_state) -> None:
+    """Structured log for tenacity retries with snake_case event."""
+
+    exc = retry_state.outcome.exception()
+    logger.warning(
+        "llm_call_retrying",
+        attempt=retry_state.attempt_number,
+        sleep=retry_state.next_action.sleep if retry_state.next_action else None,
+        error=str(exc) if exc else None,
+    )
 
 from app.core.config import (
     Environment,
     settings,
 )
 from app.core.logging import logger
+from app.services.llm_models import (
+    LLM_MODELS,
+    LLMModel,
+    resolve_model_name,
+)
 
 
 class LLMRegistry:
@@ -38,58 +54,48 @@ class LLMRegistry:
     methods to retrieve them by name with optional argument overrides.
     """
 
-    # Class-level variable containing all available LLM models
-    LLMS: List[Dict[str, Any]] = [
-        {
-            "name": "gpt-5-mini",
-            "llm": ChatOpenAI(
-                model="gpt-5-mini",
-                api_key=settings.OPENAI_API_KEY,
-                max_tokens=settings.MAX_TOKENS,
-                reasoning={"effort": "low"},
-            ),
-        },
-        {
-            "name": "gpt-5",
-            "llm": ChatOpenAI(
-                model="gpt-5",
-                api_key=settings.OPENAI_API_KEY,
-                max_tokens=settings.MAX_TOKENS,
-                reasoning={"effort": "medium"},
-            ),
-        },
-        {
-            "name": "gpt-5-nano",
-            "llm": ChatOpenAI(
-                model="gpt-5-nano",
-                api_key=settings.OPENAI_API_KEY,
-                max_tokens=settings.MAX_TOKENS,
-                reasoning={"effort": "minimal"},
-            ),
-        },
-        {
-            "name": "gpt-4o",
-            "llm": ChatOpenAI(
-                model="gpt-4o",
-                temperature=settings.DEFAULT_LLM_TEMPERATURE,
-                api_key=settings.OPENAI_API_KEY,
-                max_tokens=settings.MAX_TOKENS,
-                top_p=0.95 if settings.ENVIRONMENT == Environment.PRODUCTION else 0.8,
-                presence_penalty=0.1 if settings.ENVIRONMENT == Environment.PRODUCTION else 0.0,
-                frequency_penalty=0.1 if settings.ENVIRONMENT == Environment.PRODUCTION else 0.0,
-            ),
-        },
-        {
-            "name": "gpt-4o-mini",
-            "llm": ChatOpenAI(
-                model="gpt-4o-mini",
-                temperature=settings.DEFAULT_LLM_TEMPERATURE,
-                api_key=settings.OPENAI_API_KEY,
-                max_tokens=settings.MAX_TOKENS,
-                top_p=0.9 if settings.ENVIRONMENT == Environment.PRODUCTION else 0.8,
-            ),
-        },
-    ]
+    LLMS: List[Dict[str, Any]] = []
+
+    @staticmethod
+    def _base_llm_kwargs(model_meta: LLMModel) -> Dict[str, Any]:
+        """Common kwargs per model, including per-model tuning."""
+
+        kwargs: Dict[str, Any] = {
+            "model": model_meta.provider_model,
+            "api_key": settings.OPENROUTER_API_KEY,
+            "base_url": settings.LLM_BASE_URL,
+            "max_tokens": model_meta.max_output_tokens or settings.MAX_TOKENS,
+            "temperature": settings.DEFAULT_LLM_TEMPERATURE,
+        }
+
+        if model_meta.name == "gpt-4o-mini":
+            kwargs["top_p"] = 0.9 if settings.ENVIRONMENT == Environment.PRODUCTION else 0.8
+        if model_meta.name == "gpt-4o":
+            kwargs["top_p"] = 0.95 if settings.ENVIRONMENT == Environment.PRODUCTION else 0.8
+            kwargs["presence_penalty"] = 0.1 if settings.ENVIRONMENT == Environment.PRODUCTION else 0.0
+            kwargs["frequency_penalty"] = 0.1 if settings.ENVIRONMENT == Environment.PRODUCTION else 0.0
+
+        # Override tokenizer model to avoid unsupported provider ids like openai/gpt-4o-mini
+        kwargs["tiktoken_model_name"] = model_meta.name
+
+        return kwargs
+
+    @classmethod
+    def _ensure_initialized(cls):
+        """Lazily build the registry from the canonical model list."""
+
+        if cls.LLMS:
+            return
+
+        cls.LLMS = []
+        for model in LLM_MODELS:
+            kwargs = cls._base_llm_kwargs(model)
+            cls.LLMS.append({
+                "name": model.name,
+                "provider_model": model.provider_model,
+                "meta": model,
+                "llm": ChatOpenAI(**kwargs),
+            })
 
     @classmethod
     def get(cls, model_name: str, **kwargs) -> BaseChatModel:
@@ -105,10 +111,18 @@ class LLMRegistry:
         Raises:
             ValueError: If model_name is not found in LLMS
         """
+        cls._ensure_initialized()
+
+        try:
+            resolved_name = resolve_model_name(model_name)
+        except ValueError as e:
+            logger.warning("unknown_model_resolution_failed", requested=model_name, error=str(e))
+            raise
+
         # Find the model in the registry
         model_entry = None
         for entry in cls.LLMS:
-            if entry["name"] == model_name:
+            if entry["name"] == resolved_name:
                 model_entry = entry
                 break
 
@@ -120,11 +134,12 @@ class LLMRegistry:
 
         # If user provides kwargs, create a new instance with those args
         if kwargs:
-            logger.debug("creating_llm_with_custom_args", model_name=model_name, custom_args=list(kwargs.keys()))
-            return ChatOpenAI(model=model_name, api_key=settings.OPENAI_API_KEY, **kwargs)
+            merged_kwargs = {**cls._base_llm_kwargs(model_entry["meta"]), **kwargs}
+            logger.debug("creating_llm_with_custom_args", model_name=model_entry["name"], custom_args=list(kwargs.keys()))
+            return ChatOpenAI(**merged_kwargs)
 
         # Return the default instance
-        logger.debug("using_default_llm_instance", model_name=model_name)
+        logger.debug("using_default_llm_instance", model_name=model_entry["name"])
         return model_entry["llm"]
 
     @classmethod
@@ -134,6 +149,7 @@ class LLMRegistry:
         Returns:
             List of LLM names
         """
+        cls._ensure_initialized()
         return [entry["name"] for entry in cls.LLMS]
 
     @classmethod
@@ -146,6 +162,7 @@ class LLMRegistry:
         Returns:
             Model entry dict
         """
+        cls._ensure_initialized()
         if 0 <= index < len(cls.LLMS):
             return cls.LLMS[index]
         return cls.LLMS[0]  # Wrap around to first model
@@ -192,6 +209,7 @@ class LLMService:
         Returns:
             Next model index (wraps around to 0 if at end)
         """
+        LLMRegistry._ensure_initialized()
         total_models = len(LLMRegistry.LLMS)
         next_index = (self._current_model_index + 1) % total_models
         return next_index
@@ -202,6 +220,7 @@ class LLMService:
         Returns:
             True if successfully switched, False otherwise
         """
+        LLMRegistry._ensure_initialized()
         try:
             next_index = self._get_next_model_index()
             next_model_entry = LLMRegistry.get_model_at_index(next_index)
@@ -226,7 +245,7 @@ class LLMService:
         stop=stop_after_attempt(settings.MAX_LLM_CALL_RETRIES),
         wait=wait_exponential(multiplier=1, min=2, max=10),
         retry=retry_if_exception_type((RateLimitError, APITimeoutError, APIError)),
-        before_sleep=before_sleep_log(logger, "WARNING"),
+        before_sleep=_log_retry,
         reraise=True,
     )
     async def _call_llm_with_retry(self, messages: List[BaseMessage]) -> BaseMessage:
@@ -286,61 +305,34 @@ class LLMService:
         # If user specifies a model, get it from registry
         if model_name:
             try:
-                self._llm = LLMRegistry.get(model_name, **model_kwargs)
+                resolved_model_name = resolve_model_name(model_name)
+                self._llm = LLMRegistry.get(resolved_model_name, **model_kwargs)
                 # Update index to match the requested model
                 all_names = LLMRegistry.get_all_names()
                 try:
-                    self._current_model_index = all_names.index(model_name)
+                    self._current_model_index = all_names.index(resolved_model_name)
                 except ValueError:
                     pass  # Keep current index if model name not in list
-                logger.info("using_requested_model", model_name=model_name, has_custom_kwargs=bool(model_kwargs))
+                logger.info(
+                    "using_requested_model",
+                    model_name=resolved_model_name,
+                    has_custom_kwargs=bool(model_kwargs),
+                )
             except ValueError as e:
                 logger.error("requested_model_not_found", model_name=model_name, error=str(e))
                 raise
 
-        # Track which models we've tried to prevent infinite loops
-        total_models = len(LLMRegistry.LLMS)
-        models_tried = 0
-        starting_index = self._current_model_index
-        last_error = None
-
-        while models_tried < total_models:
-            try:
-                response = await self._call_llm_with_retry(messages)
-                return response
-            except OpenAIError as e:
-                last_error = e
-                models_tried += 1
-
-                current_model_name = LLMRegistry.LLMS[self._current_model_index]["name"]
-                logger.error(
-                    "llm_call_failed_after_retries",
-                    model=current_model_name,
-                    models_tried=models_tried,
-                    total_models=total_models,
-                    error=str(e),
-                )
-
-                # If we've tried all models, give up
-                if models_tried >= total_models:
-                    logger.error(
-                        "all_models_failed",
-                        models_tried=models_tried,
-                        starting_model=LLMRegistry.LLMS[starting_index]["name"],
-                    )
-                    break
-
-                # Switch to next model in circular fashion
-                if not self._switch_to_next_model():
-                    logger.error("failed_to_switch_to_next_model")
-                    break
-
-                # Continue loop to try next model
-
-        # All models failed
-        raise RuntimeError(
-            f"failed to get response from llm after trying {models_tried} models. last error: {str(last_error)}"
-        )
+        # Call with retry; no circular fallback — use the configured model only
+        try:
+            return await self._call_llm_with_retry(messages)
+        except OpenAIError as e:
+            current_model_name = LLMRegistry.LLMS[self._current_model_index]["name"]
+            logger.error(
+                "llm_call_failed_after_retries",
+                model=current_model_name,
+                error=str(e),
+            )
+            raise RuntimeError(f"llm call failed after retries. last error: {str(e)}")
 
     def get_llm(self) -> Optional[BaseChatModel]:
         """Get the current LLM instance.

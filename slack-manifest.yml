@@ -1,0 +1,48 @@
+display_information:
+  name: Baley AI Agent
+  description: AI-powered assistant with TikTok Ads management capabilities
+  background_color: "#1a1a2e"
+  long_description: >
+    Baley AI Agent is an intelligent assistant built on LangGraph and GPT-4o-mini.
+    It can answer general questions, help with research via web search, and manage
+    TikTok ad campaigns directly from Slack. Mention the bot in any channel or send a DM.
+    In #marketing, #tiktok-ads, #ads, or #paid-social channels it automatically
+    switches to the TikTok Marketing Agent mode.
+
+features:
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  bot_user:
+    display_name: Baley
+    always_online: true
+
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read       # Receive @mention events
+      - channels:history        # Read messages in public channels
+      - channels:read           # Resolve channel names
+      - chat:write              # Post messages
+      - chat:write.customize    # Post with custom username/icon
+      - im:history              # Read DMs
+      - im:read                 # Access DM channel info
+      - im:write                # Open DM conversations
+      - groups:history          # Read messages in private channels
+      - groups:read             # Resolve private channel names
+      - mpim:history            # Read group DM messages
+      - mpim:read               # Access group DM info
+
+settings:
+  event_subscriptions:
+    request_url: https://agent-platform.myaichat.app/api/v1/slack/events
+    bot_events:
+      - app_mention             # @bot mentions in channels
+      - message.im              # Direct messages to the bot
+      - message.groups          # Messages in private channels (optional)
+  interactivity:
+    is_enabled: false           # Enable later if you add buttons/modals
+  org_deploy_enabled: false
+  socket_mode_enabled: false    # Using HTTP mode (request_url above)
+  token_rotation_enabled: false

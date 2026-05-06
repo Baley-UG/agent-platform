@@ -226,7 +226,7 @@ POSTGRES_USER=postgres
 POSTGRES_PASSWORD=postgres
 
 # LLM Configuration
-OPENAI_API_KEY=your_openai_api_key
+OPENROUTER_API_KEY=your_openrouter_api_key
 DEFAULT_LLM_MODEL=gpt-4o
 DEFAULT_LLM_TEMPERATURE=0.7
 MAX_TOKENS=4096

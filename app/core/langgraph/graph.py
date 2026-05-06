@@ -90,9 +90,20 @@ class LangGraphAgent:
                     },
                     "llm": {
                         "provider": "openai",
-                        "config": {"model": settings.LONG_TERM_MEMORY_MODEL},
+                        "config": {
+                            "model": settings.LONG_TERM_MEMORY_MODEL,
+                            "api_key": settings.OPENROUTER_API_KEY,
+                            "openai_base_url": settings.LLM_BASE_URL,
+                        },
                     },
-                    "embedder": {"provider": "openai", "config": {"model": settings.LONG_TERM_MEMORY_EMBEDDER_MODEL}},
+                    "embedder": {
+                        "provider": "openai",
+                        "config": {
+                            "model": settings.LONG_TERM_MEMORY_EMBEDDER_MODEL,
+                            "api_key": settings.OPENROUTER_API_KEY,
+                            "openai_base_url": settings.LLM_BASE_URL,
+                        },
+                    },
                     # "custom_fact_extraction_prompt": load_custom_fact_extraction_prompt(),
                 }
             )
@@ -338,7 +349,8 @@ class LangGraphAgent:
             )
             return self.__process_messages(response["messages"])
         except Exception as e:
-            logger.error(f"Error getting response: {str(e)}")
+            logger.error("langgraph_response_error", error=str(e), session_id=session_id)
+            raise
 
     async def get_stream_response(
         self, messages: list[Message], session_id: str, user_id: Optional[str] = None

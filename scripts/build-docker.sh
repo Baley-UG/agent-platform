@@ -61,7 +61,7 @@ echo "API keys: ******** (masked for security)"
 # Build the Docker image with secrets but without showing them in console output
 docker build --no-cache \
     --build-arg APP_ENV="$ENV" \
-    --build-arg OPENAI_API_KEY="$OPENAI_API_KEY" \
+    --build-arg OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
     --build-arg LANGFUSE_PUBLIC_KEY="$LANGFUSE_PUBLIC_KEY" \
     --build-arg LANGFUSE_SECRET_KEY="$LANGFUSE_SECRET_KEY" \
     --build-arg JWT_SECRET_KEY="$JWT_SECRET_KEY" \

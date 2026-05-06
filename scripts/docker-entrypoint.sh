@@ -44,12 +44,14 @@ elif [ -f ".env" ]; then
             echo "Keeping existing value for $key"
         fi
     done <".env"
+elif [[ -n "${POSTGRES_HOST:-${DB_HOST:-}}${OPENROUTER_API_KEY:-}" || -n "${JWT_SECRET_KEY:-}" ]]; then
+    echo "Environment variables already provided; skipping .env file load."
 else
     echo "Warning: No .env file found. Using system environment variables."
 fi
 
 # Check required sensitive environment variables
-required_vars=("JWT_SECRET_KEY" "OPENAI_API_KEY")
+required_vars=("JWT_SECRET_KEY" "OPENROUTER_API_KEY")
 missing_vars=()
 
 for var in "${required_vars[@]}"; do

@@ -1,8 +1,8 @@
-version: '3.8'
-
 services:
   db:
     image: pgvector/pgvector:pg16
+    env_file:
+      - .env
     environment:
       - POSTGRES_DB=${POSTGRES_DB}
       - POSTGRES_USER=${POSTGRES_USER}
@@ -32,7 +32,7 @@ services:
       - ./app:/app/app
       - ./logs:/app/logs
     env_file:
-      - .env.${APP_ENV:-development}
+      - .env
     environment:
       - APP_ENV=${APP_ENV:-development}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-supersecretkeythatshouldbechangedforproduction}
@@ -90,6 +90,31 @@ services:
     networks:
       - monitoring
     restart: always
+
+  tiktok-ads-mcp:
+    build:
+      context: .
+      dockerfile: docker/tiktok-ads-mcp.Dockerfile
+    env_file:
+      - .env
+    environment:
+      - TIKTOK_APP_ID=${TIKTOK_APP_ID}
+      - TIKTOK_APP_SECRET=${TIKTOK_APP_SECRET}
+      - TIKTOK_REDIRECT_URI=${TIKTOK_REDIRECT_URI}
+      - TIKTOK_ADVERTISER_ID=${TIKTOK_ADVERTISER_ID}
+      - HOST=0.0.0.0
+      - PORT=8001
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: on-failure
+    networks:
+      - monitoring
 
 
 networks:
