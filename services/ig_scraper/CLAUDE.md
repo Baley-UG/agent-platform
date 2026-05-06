@@ -55,8 +55,8 @@ and starts where you left off.
 | ID | Title | Status | Commit |
 | - | - | - | - |
 | M1 | Foundations | ✅ done | _see git log_ |
-| M2 | Account & proxy management | ✅ done | _pending commit_ |
-| M3 | Job queue + worker | ⏳ not started | — |
+| M2 | Account & proxy management | ✅ done | _see git log_ |
+| M3 | Job queue + worker | ✅ done | _pending commit_ |
 | M4 | Feed scrape flows | ⏳ not started | — |
 | M5 | Stories & highlights | ⏳ not started | — |
 | M5.5 | MCP read surface | ⏳ not started | — |
@@ -141,7 +141,39 @@ What's deliberately NOT in M2 (still stubbed):
 - Daily-quota enforcement, active-hours filtering, cooldown gating — those decisions live inside the pool, not on the account model. Same milestone.
 - Canary-account scheduled probe — the `role='canary'` column is honoured by `accounts_service.create_account`/`update_account`, but the actual canary scheduled job lands in M7 (scheduler).
 
-Next milestone (M3): job queue + worker loop. `ig_scrape_jobs` `SKIP LOCKED` claim query, asyncio worker loop with heartbeat, `usage_daily` counters incremented per call, stub scraper that just sleeps so we can prove the queue under load. Read § 4.2 and § 9 of the plan first.
+## M3 deliverables
+
+What landed in M3:
+- `app/services/heartbeat.py` — atomic upsert into `ig_worker_heartbeat` (`ON CONFLICT (process, instance_id) DO UPDATE SET last_seen_at`). `make_instance_id()` builds a stable id from hostname + pid.
+- `app/services/usage.py` — single-statement upsert into `ig_usage_daily` with column-wise `+=` semantics. Two workers can bump the same row concurrently without losing writes.
+- `app/services/jobs.py` — full CRUD + worker primitives. The load-bearing query is `claim_next_job` (`UPDATE ... WHERE id = (SELECT FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id`). `mark_succeeded` / `mark_failed` / `mark_retry` handle the state transitions including max-attempts → terminal failure.
+- `app/services/account_pool.py` — `acquire(session, job)` / `release(session, acquired, outcome)`. Pre-filters at SQL level (`status='active'`, `cooldown_until` past, role match), then Python-side post-filter for active-hours (timezone aware via `zoneinfo`) and tier-quota (today's `ig_usage_daily.calls_made` vs `IG_DAILY_QUOTA_<tier>`). Outcomes drive cooldown durations from § 5.3 (I) of the plan.
+- `app/services/scrapers/__init__.py` — registry-based dispatcher. Real scrapers (M4–M6) call `register(job_type, fn)` at import. Until then, `_stub_scraper` sleeps 1–3s and reports zero work — enough to prove the queue under load.
+- `app/worker.py` — replaces the placeholder. Spawns `IG_WORKER_CONCURRENCY` async loops + 1 heartbeat task. SIGTERM/SIGINT installs an asyncio.Event so loops finish their current job and exit cleanly.
+- `app/api/v1/jobs.py` — POST/GET/GET-by-id/POST-cancel/POST-retry. Filters: `status`, `job_type`, `target`, `limit`, `offset`. All gated by X-API-Key.
+- `app/schemas/jobs.py` — `JobCreate`, `JobRead`. `JobType` and `JobStatus` are typing.Literals; a test enforces they stay in sync with `VALID_JOB_TYPES` / `TERMINAL_STATUSES` in the service module.
+- `tests/test_account_pool.py` — 7 tests covering active-hours window, timezone awareness, wrap-around windows (e.g. 22..6), weekday bitmap, role detection, cooldown ranges.
+- `tests/test_jobs_validation.py` — 2 tests that prevent JobType drift between the schema and service.
+
+What works now (verified):
+- 33 routes including 5 real M3 endpoints replacing the stubs.
+- 14/14 unit tests green.
+- Worker launches `IG_WORKER_CONCURRENCY` loops + heartbeat, handles SIGTERM cleanly.
+- Stub scraper proves the queue/pool/heartbeat plumbing without IG calls.
+
+Critical contract decisions made in M3 (don't re-debate without explicit OK):
+- Worker concurrency is **in-process**, not multi-replica. Set `replicas: 2+` in compose to scale horizontally; `SKIP LOCKED` makes that safe out of the box.
+- Account locking uses `last_used_at NULLS FIRST, RANDOM()` so newly onboarded accounts get exercised but normal load is even.
+- Active-hours / quota / cooldown checks are **post-fetch in Python**, not SQL. Trade-off documented at top of `account_pool.py` — keeps the SQL portable, costs at most one extra row read per skip.
+- Soft-fail (no retries left) → terminal `failed`; `cancel` is allowed only on non-terminal jobs.
+- `mark_retry` uses `attempt >= max_attempts` to decide when to give up. `attempt` was already incremented at claim time, so the first failure of a job with `max_attempts=3` would give `attempt=1, max=3` → retry; the third would give `attempt=3, max=3` → terminal.
+
+What's still stubbed:
+- Real scrapers (`_stub_scraper` is everything for M4–M5).
+- Tracked-targets registry (`/targets`) and the scheduler — M7.
+- Score computation (M8), webhooks (M9).
+
+Next milestone (M4): user_feed_full + user_feed_incremental scrapers. Calls instagrapi `user_id_from_username_v1`, `user_info_v1`, `user_medias_paginated_v1` (+ `user_clips_paginated_v1` merge). Persists posts + comments + caption features + simhash + audio normalization. Writes a `ig_post_metric_snapshots` row on every upsert. Cursor management on `ig_scan_targets`. Read § 6.1–6.2 of the plan first.
 
 ## Open questions (still unresolved — flag if a milestone touches one)
 
