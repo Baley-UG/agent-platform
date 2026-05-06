@@ -91,6 +91,13 @@ from app.services.scrapers.user_feed import (  # noqa: E402
     run_user_feed_full,
     run_user_feed_incremental,
 )
+from app.services.scrapers.user_stories import run_user_stories  # noqa: E402
+from app.services.scrapers.user_highlights import run_user_highlights  # noqa: E402
+from app.services.scrapers.hashtag import run_hashtag_recent, run_hashtag_top  # noqa: E402
 
 register("user_feed_full", run_user_feed_full)
 register("user_feed_incremental", run_user_feed_incremental)
+register("user_stories", run_user_stories)
+register("user_highlights", run_user_highlights)
+register("hashtag_top", run_hashtag_top)
+register("hashtag_recent", run_hashtag_recent)

@@ -57,10 +57,10 @@ and starts where you left off.
 | M1 | Foundations | ✅ done | _see git log_ |
 | M2 | Account & proxy management | ✅ done | _see git log_ |
 | M3 | Job queue + worker | ✅ done | _see git log_ |
-| M4 | Feed scrape flows | ✅ done | _pending commit_ |
-| M5 | Stories & highlights | ⏳ not started | — |
+| M4 | Feed scrape flows | ✅ done | _see git log_ |
+| M5 | Stories & highlights | ✅ done | _pending commit_ |
 | M5.5 | MCP read surface | ⏳ not started | — |
-| M6 | Hashtag scan + author enrichment | ⏳ not started | — |
+| M6 | Hashtag scan + author enrichment | ✅ done | _pending commit_ |
 | M7 | Scheduler & tracked targets | ⏳ not started | — |
 | M8 | Scoring & analytical views | ⏳ not started | — |
 | M9 | Webhooks & retention | ⏳ not started | — |
@@ -206,7 +206,41 @@ What's still stubbed:
 - Score (M8). Snapshots are being written; computation isn't.
 - Webhooks (M9).
 
-Next milestone (M5): `user_stories` (insert-only into `ig_stories`) and `user_highlights` (opt-in via `fetch_highlights=true`, populates `ig_highlights` + `ig_highlight_items`). Stories are ephemeral so missing a daily run = permanently lost data. Read § 6.3–6.4 of the plan first.
+## M5 deliverables
+
+What landed in M5:
+- `app/services/persistence/stories.py` — `insert_story(...)`. INSERT-only with `ON CONFLICT (id) DO NOTHING`. Walks instagrapi sticker payloads to pull hashtags, mentions, swipe-up link. `expires_at` computed as `taken_at + 24h` when IG doesn't supply one explicitly.
+- `app/services/persistence/highlights.py` — `upsert_highlight(...)` and `link_highlight_item(...)`. Highlights are containers; their items reuse `ig_stories` so analytics queries work the same way as for live stories.
+- `app/services/scrapers/user_stories.py` — calls `user_stories_v1`, persists each into `ig_stories`. No filter, no comments, no pagination — IG returns the whole tray in one shot.
+- `app/services/scrapers/user_highlights.py` — calls `user_highlights` + `highlight_info` per container, persists items via the stories pipeline plus the membership row.
+- `tests/test_stories_persistence.py` — 5 tests covering datetime coercion (unix epoch, naive datetime, None, garbage) and sticker walker dedup.
+
+## M6 deliverables
+
+What landed in M6:
+- `app/services/scrapers/hashtag.py` — `run_hashtag_top` and `run_hashtag_recent`. Calls `hashtag_medias_top_v1` / `_recent_v1`, applies the same filter as user_feed, persists posts through the same pipeline (post + snapshot + audio + hashtags). Comments are intentionally NOT fetched here — too noisy at hashtag scale.
+- `app/services/scrapers/enrichment.py` — `enrich_authors(...)` co-routine. For each unique author seen in a hashtag scan: skip if already a tracked target, refresh profile if `last_seen_at` older than 7 days, then check `_should_promote(profile, min_followers, min_media)`. On promotion auto-creates an `ig_scan_targets` row with `auto_discovered=true` and `source_target_id=` job's scan_target_id. Status = `pending_review` by default; `active` when `IG_AUTO_PROMOTE_DISCOVERED=true`.
+- `app/services/scrapers/__init__.py` — registers all 6 scrapers in the dispatcher: feed full / incremental, stories, highlights, hashtag top / recent.
+- `tests/test_enrichment.py` — 5 tests pinning the promotion thresholds (followers, media count, private flag, missing fields).
+
+What works now (verified):
+- 41/41 unit tests green.
+- Dispatcher registry: `['hashtag_recent', 'hashtag_top', 'user_feed_full', 'user_feed_incremental', 'user_highlights', 'user_stories']`.
+- Module imports clean — no circular import between user_feed (helpers) and the M5/M6 scrapers that reuse them.
+
+Critical contract decisions made in M5+M6:
+- **Stories are insert-only**. We never UPDATE an `ig_stories` row. Missed runs lose data permanently — that's by design (matches IG semantics) and documented at the top of `persistence/stories.py`.
+- **Highlight items reuse `ig_stories`**. Saved highlights ARE stories from the user's perspective; one analytics query (e.g. "all stories of brand X") trivially covers both.
+- **Hashtag jobs don't fetch comments by default**. Plan § 6.5 noted "too noisy at scale" — the cost / signal trade-off only makes sense for tracked-user feeds where the per-author signal is high.
+- **Enrichment dedupes per scan**. If 30 posts in a hashtag batch are by the same author, we still only call `user_info_v1` once for them. Same author appearing in a future scan within `ENRICH_REFRESH_DAYS=7` is a no-op.
+- **Promotion is conservative**. Three gates (followers / media / not private) AND default `pending_review`. The plan's median-score gate from § 6.6 lands in M8 — flagged in `enrichment.py` so we know to add it.
+- **Auto-discovered targets carry provenance** via `source_target_id`. Operators can ask "where did this brand come from?" with a single SELECT.
+
+What's still stubbed:
+- `user_enrich` job_type — not registered. The current enrichment runs INSIDE hashtag scrapes; a standalone `user_enrich` job (refresh stats for a known target outside the daily scan) is a future polish item, not Phase 1 critical.
+- M5.5 (MCP read surface), M7 (scheduler + tracked-target CRUD), M8 (scoring), M9 (webhooks), M10 (hardening).
+
+Next milestone (M5.5): MCP read surface. Mount FastMCP at `/mcp` on the same FastAPI app. Tools: `search_posts`, `get_user_profile`, `get_user_top_posts`, `get_recent_stories`, `get_post_comments`, `list_tracked_targets`, `get_job_status`. Resources: `ig://user/{username}/profile`, `ig://post/{id}`, `ig://hashtag/{name}/top`. Auth via the same `IG_SCRAPER_API_KEY` (Bearer header for MCP). Read § 8c of the plan first.
 
 ## Open questions (still unresolved — flag if a milestone touches one)
 
