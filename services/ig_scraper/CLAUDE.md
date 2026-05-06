@@ -54,8 +54,8 @@ and starts where you left off.
 
 | ID | Title | Status | Commit |
 | - | - | - | - |
-| M1 | Foundations | ✅ done | _pending commit_ |
-| M2 | Account & proxy management | ⏳ not started | — |
+| M1 | Foundations | ✅ done | _see git log_ |
+| M2 | Account & proxy management | ✅ done | _pending commit_ |
 | M3 | Job queue + worker | ⏳ not started | — |
 | M4 | Feed scrape flows | ⏳ not started | — |
 | M5 | Stories & highlights | ⏳ not started | — |
@@ -118,7 +118,30 @@ What's deliberately stubbed (will fail with 501):
 - Account / proxy CRUD → M2.
 - Target CRUD → M7.
 
-Next milestone (M2): account & proxy CRUD, Fernet encryption, login flow that populates `session_blob`, proxy connectivity test endpoint. Read § 5.1–5.2 of the plan first.
+## M2 deliverables
+
+What landed in M2:
+- `app/services/crypto.py` — Fernet wrapper (`encrypt`/`decrypt`/`encrypt_optional`/`decrypt_optional`). Refuses to start with the placeholder `IG_SECRET_KEY`. Raises a clear `RuntimeError` with rotation guidance if a stored ciphertext fails to decrypt under the current key.
+- `app/services/instagrapi_client.py` — wraps `instagrapi.Client` with proxy URL building (`build_proxy_url`), session-blob loading, and a `login_account(account, proxy, verification_code=None)` coroutine that runs the blocking login in a threadpool. Maps instagrapi exceptions to the `ig_accounts.status` enum (`active` / `challenge_required` / `banned` / `disabled`).
+- `app/services/accounts.py` — service-layer CRUD: `create_account`, `list_accounts`, `get_account`, `update_account`, `disable_account`, `run_login`. Whitelisted role/status/quota_tier values; 409 on username conflicts; 400 on invalid proxy_id.
+- `app/services/proxies.py` — service-layer CRUD plus `test_proxy(...)` that issues a single `GET https://api.ipify.org?format=json` through the proxy with an 8s timeout, persists `last_ok_at` / `failure_count` / `status` accordingly, returns latency + public IP.
+- `app/schemas/accounts.py` and `app/schemas/proxies.py` — request/response Pydantic models. **Read shapes never expose `password_enc` or `session_blob`.**
+- `app/api/v1/accounts.py` — POST/GET/GET-by-id/PATCH/POST-disable/POST-login. POST-login is async; the rest are sync (DB-bound).
+- `app/api/v1/proxies.py` — POST/GET/GET-by-id/PATCH/POST-test.
+- `tests/test_crypto.py` — 5 tests covering round-trip, optional round-trip, IV randomness, key rotation failure, placeholder rejection. All pass.
+
+What works now (verified):
+- All 33 routes register (was 27 in M1, +11 actual M2 endpoints replacing 5 stubs).
+- Crypto round-trips Unicode passwords cleanly.
+- Decrypting under a rotated key raises a clear error instead of silently returning garbage.
+- The service-layer functions are pure (no FastAPI imports) — easy to unit-test.
+
+What's deliberately NOT in M2 (still stubbed):
+- The account *pool* (`account_pool.acquire()` / `release()` with `SELECT ... FOR UPDATE SKIP LOCKED`) — that lives next to the worker loop and lands in M3.
+- Daily-quota enforcement, active-hours filtering, cooldown gating — those decisions live inside the pool, not on the account model. Same milestone.
+- Canary-account scheduled probe — the `role='canary'` column is honoured by `accounts_service.create_account`/`update_account`, but the actual canary scheduled job lands in M7 (scheduler).
+
+Next milestone (M3): job queue + worker loop. `ig_scrape_jobs` `SKIP LOCKED` claim query, asyncio worker loop with heartbeat, `usage_daily` counters incremented per call, stub scraper that just sleeps so we can prove the queue under load. Read § 4.2 and § 9 of the plan first.
 
 ## Open questions (still unresolved — flag if a milestone touches one)
 
