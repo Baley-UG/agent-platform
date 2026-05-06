@@ -105,6 +105,41 @@ def _build_server():
             )
 
     @mcp.tool()
+    def get_high_scoring_posts(
+        author: Optional[str] = None,
+        hashtag: Optional[str] = None,
+        since: Optional[str] = None,
+        min_score: float = 60.0,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Posts above `min_score` (0–100), ordered by score descending.
+
+        This is the canonical "show me what's working" query for the
+        AI content generator. Combine with `author` to study a single
+        competitor or `hashtag` to scan a niche.
+        """
+        from app.services.database import read_session_scope
+        from app.services.queries import get_user_top_posts as _top
+        from app.services.queries import search_posts as _search
+
+        since_dt = _parse_iso(since)
+        with read_session_scope() as session:
+            if author:
+                rows = _top(
+                    session, username=author, by="score", since=since_dt, limit=limit * 2
+                )
+            else:
+                rows = _search(
+                    session,
+                    hashtag=hashtag,
+                    since=since_dt,
+                    limit=limit * 4,
+                )
+                rows = sorted(rows, key=lambda r: (r.get("score") or 0), reverse=True)
+            rows = [r for r in rows if (r.get("score") or 0) >= min_score][:limit]
+            return _serialise(rows)
+
+    @mcp.tool()
     def get_post_comments(post_id: int, limit: int = 50) -> List[Dict[str, Any]]:
         """Comments on a post, ordered by likes."""
         from app.services.database import read_session_scope

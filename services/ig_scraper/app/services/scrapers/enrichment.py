@@ -68,12 +68,59 @@ def _existing_target_id(session: Session, username: str) -> Optional[uuid.UUID]:
     return row[0] if row else None
 
 
-def _should_promote(profile: Dict[str, Any], *, min_followers: int, min_media: int) -> bool:
+def _median_recent_score(session: Session, user_id: int, *, lookback: int = 10) -> Optional[float]:
+    """Median score of the candidate's last `lookback` scored posts in our DB.
+
+    Returns None when we have <5 scored posts for this user — the
+    sample is too small to make a quality call.
+    """
+    rows = session.execute(
+        text(
+            """
+            SELECT score FROM ig_posts
+            WHERE author_id = :uid AND score IS NOT NULL
+            ORDER BY taken_at DESC
+            LIMIT :limit
+            """
+        ),
+        {"uid": user_id, "limit": lookback},
+    ).scalars().all()
+    if len(rows) < 5:
+        return None
+    sorted_scores = sorted(float(r) for r in rows)
+    mid = len(sorted_scores) // 2
+    if len(sorted_scores) % 2:
+        return sorted_scores[mid]
+    return (sorted_scores[mid - 1] + sorted_scores[mid]) / 2.0
+
+
+def _should_promote(
+    profile: Dict[str, Any],
+    *,
+    min_followers: int,
+    min_media: int,
+    median_score: Optional[float] = None,
+    min_score: Optional[float] = None,
+) -> bool:
+    """Three deterministic gates plus optional median-score gate.
+
+    The median-score gate (M8) only fires when we have enough scored
+    posts to make a meaningful call. When `median_score` is None
+    (sample too small) we skip the score check rather than defaulting
+    to "reject" — the goal is to filter low-quality popular accounts,
+    not punish users we just discovered.
+    """
     if profile.get("is_private"):
         return False
     if int(profile.get("follower_count") or 0) < min_followers:
         return False
     if int(profile.get("media_count") or 0) < min_media:
+        return False
+    if (
+        min_score is not None
+        and median_score is not None
+        and median_score < min_score
+    ):
         return False
     return True
 
@@ -159,7 +206,17 @@ async def enrich_authors(
             # Use whatever payload the hashtag scrape already gave us.
             profile = payload
 
-        if not _should_promote(profile, min_followers=min_followers, min_media=min_media):
+        # Activate the median-score gate now that scoring exists (M8).
+        # The check no-ops when we have <5 scored posts for this user.
+        with session_scope() as session:
+            median = _median_recent_score(session, user_id)
+        if not _should_promote(
+            profile,
+            min_followers=min_followers,
+            min_media=min_media,
+            median_score=median,
+            min_score=settings.IG_MIN_SCORE_FOR_ENRICH,
+        ):
             continue
 
         with session_scope() as session:

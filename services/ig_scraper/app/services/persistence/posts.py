@@ -21,6 +21,7 @@ from sqlmodel import Session
 
 from app.services.features import extract as extract_features
 from app.services.persistence.hashtags import upsert_hashtag
+from app.services.scoring import update_post_score
 
 _UPSERT_POST = text(
     """
@@ -165,6 +166,17 @@ def upsert_post(
     for tag in features.hashtags:
         upsert_hashtag(session, tag)
         session.execute(_INSERT_POST_HASHTAG, {"post_id": post_id, "hashtag": tag})
+
+    # Inline score recompute. The implementation is best-effort: if the
+    # author row hasn't been written yet (rare race) we silently skip
+    # scoring and the nightly batch will pick it up. Same if a query
+    # blip prevents computation — never let scoring kill a scrape.
+    try:
+        update_post_score(session, post_id)
+    except Exception as exc:  # noqa: BLE001
+        from app.core.logging import logger
+
+        logger.warning("inline_score_failed", post_id=post_id, error=str(exc))
 
     return post_id
 

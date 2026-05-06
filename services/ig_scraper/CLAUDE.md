@@ -61,8 +61,8 @@ and starts where you left off.
 | M5 | Stories & highlights | ✅ done | _pending commit_ |
 | M5.5 | MCP read + write surface | ✅ done | _pending commit_ |
 | M6 | Hashtag scan + author enrichment | ✅ done | _see git log_ |
-| M7 | Scheduler & tracked targets | ✅ done | _pending commit_ |
-| M8 | Scoring & analytical views | ⏳ not started | — |
+| M7 | Scheduler & tracked targets | ✅ done | _see git log_ |
+| M8 | Scoring & analytical views | ✅ done | _pending commit_ |
 | M9 | Webhooks & retention | ⏳ not started | — |
 | M10 | Hardening & launch (end of Phase 1) | ⏳ not started | — |
 | M11 | pgvector & caption embeddings | ⏳ not started | — |
@@ -279,7 +279,43 @@ What's still stubbed:
 - Hardening / canary scheduled probe / Grafana dashboard (M10).
 - `user_enrich` standalone job — the enrichment runs INSIDE hashtag scrapes (M6); a standalone job to refresh stats for a known target is a future polish item, not Phase 1 critical.
 
-Next milestone (M8): scoring + analytical views. Implement the score function from § 14b (engagement_rate, velocity from `ig_post_metric_snapshots`, view_efficiency, comment_intensity, author_relative z-score, freshness). Inline-recompute on every post upsert, nightly batch over the last 30 days. Materialised views: `ig_top_posts_by_author` (hourly refresh), `ig_author_posting_pattern` (daily), `ig_hashtag_velocity` (daily). REST `?min_score=` and `?order=score_desc` filters. New MCP tool `get_high_scoring_posts`. Activate the median-score gate inside `enrichment.py::_should_promote`. Read § 14b of the plan first.
+## M8 deliverables
+
+What landed in M8:
+- `app/services/scoring.py` — `compute_score()` (pure function), `velocity_for_post()`, `author_relative_score()`, `update_post_score()`, `recompute_recent_batch()`, `refresh_views()`. Six components, all in [0,1], weighted via env. Final score clipped to [0, 100]. Inline recompute is wrapped in try/except so a scoring blip can't kill a scrape.
+- `alembic/versions/0002_scoring_views.py` — three materialised views with unique indexes (so REFRESH MATERIALIZED VIEW CONCURRENTLY works without holding an exclusive lock):
+  - `ig_top_posts_by_author` — per-author rank by score
+  - `ig_author_posting_pattern` — (hour_of_day, weekday) histogram with avg_score
+  - `ig_hashtag_velocity` — last-7d vs prior-7d post counts and avg_score per hashtag, plus a `post_delta` column
+- `app/services/persistence/posts.py` — every `upsert_post` now triggers an inline score recompute after the snapshot is written.
+- `app/scheduler.py` — added `_daily_loop` task that fires at 03:00 UTC, runs `recompute_recent_batch(days=30)` then `refresh_views(concurrently=True)`. Idempotent across restarts (date-keyed in-memory marker).
+- `app/api/v1/posts.py` — new `/api/v1/posts` router. Filters: `author`, `hashtag`, `min_likes`, `min_play_count`, `min_score`, `since`. Sort: `taken_at_desc | score_desc | likes_desc | play_count_desc`. Plus `/posts/{post_id}/comments`.
+- `app/api/v1/api.py` — registers the posts router.
+- `app/mcp_server.py` — new `get_high_scoring_posts` tool. Combines author/hashtag/since/min_score + score-desc ordering — the canonical "show me what's working" query the AI generator will hit.
+- `app/services/scrapers/enrichment.py` — median-score gate activated. `_median_recent_score()` returns the median of the candidate's last 10 scored posts (None when <5). `_should_promote()` now takes `median_score` + `min_score` and rejects below `IG_MIN_SCORE_FOR_ENRICH` when we have a meaningful sample. Sample-too-small passes through (we don't punish users we just discovered).
+- `tests/test_scoring.py` — 7 tests pinning the formula (zero-engagement floor, perfect-input ceiling, freshness decay, view_efficiency video-vs-photo, [0,100] clipping, component completeness, velocity normalisation).
+- `tests/test_enrichment_score_gate.py` — 5 tests covering the M8 gate (small-sample passthrough, high-score pass, low-score block, env-disabled no-op, deterministic gates still fire).
+
+What works now (verified):
+- 62/62 unit tests green (was 50; +12 in M8).
+- `alembic upgrade head --sql` emits valid CREATE MATERIALIZED VIEW + CREATE UNIQUE INDEX statements for all three views.
+- API mounts `/api/v1/posts` and `/api/v1/posts/{id}/comments`; MCP exposes `get_high_scoring_posts`.
+
+Critical contract decisions made in M8:
+- **Score is recomputed on every upsert**, not just periodically. Cost is one query per upsert (≤6 small reads + 2 updates), acceptable at scrape rates. Optimisation opportunity: cache the author's median across posts of the same scrape session — flagged for a future polish.
+- **Component normalisation thresholds** are constants in `scoring.py` (`_ENGAGEMENT_RATE_CAP=0.5`, `_VELOCITY_CAP=100`, `_VIEW_EFFICIENCY_CAP=0.10`, `_COMMENT_INTENSITY_CAP=0.05`). Calibrated from "what does a viral post in our niche look like"; if these turn out wrong we tune in code, not env, because they're not what an operator should fiddle with.
+- **`author_relative` returns 0.5 (neutral) when <3 posts in author's history**. Avoids a self-fulfilling-prophecy effect where a brand-new account's first post gets unfairly low/high relative scores.
+- **`view_efficiency` is 0.0 for photos** (no `play_count`/`view_count`). This is by design; photos compete on engagement_rate, comment_intensity, and author_relative, not views.
+- **Daily recompute runs at 03:00 UTC** (`_DAILY_HOUR_UTC`). Hardcoded — not env-configurable — because it's an internal operational detail and changing it requires re-thinking the daily fleet's timing anyway.
+- **Materialised views refresh CONCURRENTLY**. Requires a unique index on each (we created them in the migration). Reads stay live during refresh.
+- **Score is stamped on the latest snapshot too**, so historical analytics can plot score curves over time without re-running the formula.
+
+What's still stubbed:
+- Webhooks (M9).
+- Hardening + canary scheduled probe + Grafana dashboard + final anti-detection tuning (M10). End of Phase 1.
+- All Phase 2 work (M11–M13).
+
+Next milestone (M9): webhooks + retention. New `ig_webhooks` dispatcher with HMAC signing, retry/backoff. Triggers on score-threshold crossings (`post_score_threshold`) and tracked-target completions (`target_run_completed`). GDPR `expires_at` columns wired on `ig_comments.text` and `ig_users.biography`; nightly nullifier job present but disabled by default. Read § 14c (items 7+9) of the plan first.
 
 ## Open questions (still unresolved — flag if a milestone touches one)
 
