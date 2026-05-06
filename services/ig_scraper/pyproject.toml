@@ -26,6 +26,7 @@ dependencies = [
     "instagrapi>=2.1.0",
     "pillow>=10.0.0",
     "langdetect>=1.0.9",
+    "mcp>=1.6.0",
 ]
 
 [project.optional-dependencies]

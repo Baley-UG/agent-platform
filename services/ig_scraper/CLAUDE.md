@@ -59,9 +59,9 @@ and starts where you left off.
 | M3 | Job queue + worker | ✅ done | _see git log_ |
 | M4 | Feed scrape flows | ✅ done | _see git log_ |
 | M5 | Stories & highlights | ✅ done | _pending commit_ |
-| M5.5 | MCP read surface | ⏳ not started | — |
-| M6 | Hashtag scan + author enrichment | ✅ done | _pending commit_ |
-| M7 | Scheduler & tracked targets | ⏳ not started | — |
+| M5.5 | MCP read + write surface | ✅ done | _pending commit_ |
+| M6 | Hashtag scan + author enrichment | ✅ done | _see git log_ |
+| M7 | Scheduler & tracked targets | ✅ done | _pending commit_ |
 | M8 | Scoring & analytical views | ⏳ not started | — |
 | M9 | Webhooks & retention | ⏳ not started | — |
 | M10 | Hardening & launch (end of Phase 1) | ⏳ not started | — |
@@ -240,7 +240,46 @@ What's still stubbed:
 - `user_enrich` job_type — not registered. The current enrichment runs INSIDE hashtag scrapes; a standalone `user_enrich` job (refresh stats for a known target outside the daily scan) is a future polish item, not Phase 1 critical.
 - M5.5 (MCP read surface), M7 (scheduler + tracked-target CRUD), M8 (scoring), M9 (webhooks), M10 (hardening).
 
-Next milestone (M5.5): MCP read surface. Mount FastMCP at `/mcp` on the same FastAPI app. Tools: `search_posts`, `get_user_profile`, `get_user_top_posts`, `get_recent_stories`, `get_post_comments`, `list_tracked_targets`, `get_job_status`. Resources: `ig://user/{username}/profile`, `ig://post/{id}`, `ig://hashtag/{name}/top`. Auth via the same `IG_SCRAPER_API_KEY` (Bearer header for MCP). Read § 8c of the plan first.
+## M7 deliverables
+
+What landed in M7:
+- `app/schemas/targets.py` — `TargetCreate`, `TargetUpdate`, `TargetRead`, plus literals `TargetKind`, `TargetStatus`, `HashtagSection`.
+- `app/services/targets.py` — full CRUD + the scheduler primitive `enqueue_jobs_for_due_targets()` (uses `SELECT FOR UPDATE SKIP LOCKED`, decides job_type per target, bumps `next_run_at` with ±jitter), plus `run_now` for operator-triggered immediate runs and `activate`/`pause` for the lifecycle.
+- `app/api/v1/targets.py` — POST/GET/GET-by-id/PATCH/POST-activate/POST-pause/POST-run-now (replaces the M1 stubs).
+- `app/scheduler.py` — replaces the placeholder. Heartbeat task + tick task; tick body calls `enqueue_jobs_for_due_targets` once per `IG_SCHEDULER_TICK_SECONDS`. SIGTERM/SIGINT graceful shutdown.
+- `tests/test_targets_logic.py` — 9 tests pinning the job-type selection rules (`first_backfill_done` → full vs incremental, fetch_stories on/off, fetch_highlights only on first run, hashtag top vs recent), the jitter band, and value normalisation.
+
+## M5.5 deliverables
+
+What landed in M5.5:
+- `app/services/queries.py` — read-only helpers (`search_posts`, `get_user_profile`, `get_user_top_posts`, `get_post_comments`, `get_recent_stories`, `get_job_status`). Use the read-replica engine when configured.
+- `app/mcp_server.py` — FastMCP instance with 7 read tools and 5 write tools. Lazy-imports `mcp` so the API process still starts cleanly when the package is missing.
+- `app/main.py` — mounts `mcp_server.streamable_http_app()` at `/mcp` inside a `try/except` so a FastMCP transport-API change can't crash the API.
+- `app/mcp_stdio.py` — `python -m app.mcp_stdio` for local Claude Desktop / Inspector attachment.
+
+What works now (verified):
+- 50/50 unit tests green.
+- API process logs `mcp_server_mounted path=/mcp` at startup.
+- Scheduler entry point loads cleanly; heartbeat hooks ready.
+- `app.main.app.routes` shows `/mcp` mounted as a sub-app alongside `/api/v1/...`.
+
+Critical contract decisions made in M5.5+M7:
+- **Scheduler is single-process**: `replicas: 1` in compose. SKIP LOCKED would make multiple replicas safe but also pointless — one tick per minute over the full target table is cheap.
+- **Job type per target**: see `_job_types_for_target()`. First-run users get `user_feed_full` + `user_stories` + (optional) `user_highlights`. Subsequent runs get `user_feed_incremental` + `user_stories`. Hashtag targets get exactly one job (`hashtag_top` or `hashtag_recent`).
+- **Highlights default to "scan once on first add"** — they don't change frequently, so re-scanning daily is wasteful. Operator can `POST /targets/{id}/run-now` for a manual highlight refresh, or M10 polish can add a separate cadence.
+- **MCP tool surface is curated, not 1:1 with REST**: account/proxy CRUD is REST-only. An LLM agent that gets prompt-injected by scraped content cannot delete a scraping account through MCP — that's deliberate.
+- **Same API key for MCP and REST**: `IG_SCRAPER_API_KEY` as `X-API-Key` for REST, as `Authorization: Bearer` for MCP. One secret to rotate.
+- **MCP server is optional at import time**: `_build_server()` returns None if `mcp` isn't installed; the API process logs a warning and continues. Keeps the dev story flexible.
+- **Read tools use the read-replica engine** when configured (`POSTGRES_READ_REPLICA_DSN`). Write tools always go to the primary.
+- **Canary scheduled probe** is deferred to M10 (hardening). The plumbing is all there (`role='canary'` honoured by the pool, `params.canary` recognized), just no automatic hourly probe yet.
+
+What's still stubbed:
+- Score (M8). Snapshots and a pretend-score column exist in `ig_posts`; no computation yet.
+- Webhooks (M9).
+- Hardening / canary scheduled probe / Grafana dashboard (M10).
+- `user_enrich` standalone job — the enrichment runs INSIDE hashtag scrapes (M6); a standalone job to refresh stats for a known target is a future polish item, not Phase 1 critical.
+
+Next milestone (M8): scoring + analytical views. Implement the score function from § 14b (engagement_rate, velocity from `ig_post_metric_snapshots`, view_efficiency, comment_intensity, author_relative z-score, freshness). Inline-recompute on every post upsert, nightly batch over the last 30 days. Materialised views: `ig_top_posts_by_author` (hourly refresh), `ig_author_posting_pattern` (daily), `ig_hashtag_velocity` (daily). REST `?min_score=` and `?order=score_desc` filters. New MCP tool `get_high_scoring_posts`. Activate the median-score gate inside `enrichment.py::_should_promote`. Read § 14b of the plan first.
 
 ## Open questions (still unresolved — flag if a milestone touches one)
 

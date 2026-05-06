@@ -80,6 +80,23 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 app.add_api_route("/health", health, methods=["GET"], tags=["health"])
 app.add_api_route("/ready", ready, methods=["GET"], tags=["health"])
 
+# Mount the MCP server at /mcp (Streamable HTTP transport). When the
+# `mcp` package isn't installed `mcp_server` is None and we skip mounting.
+try:
+    from app.mcp_server import mcp_server  # noqa: E402
+
+    if mcp_server is not None:
+        try:
+            app.mount("/mcp", mcp_server.streamable_http_app())
+            logger.info("mcp_server_mounted", path="/mcp")
+        except Exception as exc:  # noqa: BLE001
+            # Some FastMCP versions expose a different transport entrypoint;
+            # rather than crash the API, log and let the operator fall back
+            # to stdio mode (`python -m app.mcp_stdio`).
+            logger.warning("mcp_mount_failed", error=str(exc))
+except Exception as exc:  # noqa: BLE001
+    logger.warning("mcp_import_failed", error=str(exc))
+
 
 @app.get("/")
 async def root():
