@@ -62,9 +62,9 @@ and starts where you left off.
 | M5.5 | MCP read + write surface | ✅ done | _pending commit_ |
 | M6 | Hashtag scan + author enrichment | ✅ done | _see git log_ |
 | M7 | Scheduler & tracked targets | ✅ done | _see git log_ |
-| M8 | Scoring & analytical views | ✅ done | _pending commit_ |
-| M9 | Webhooks & retention | ⏳ not started | — |
-| M10 | Hardening & launch (end of Phase 1) | ⏳ not started | — |
+| M8 | Scoring & analytical views | ✅ done | _see git log_ |
+| M9 | Webhooks & retention | ✅ done | _pending commit_ |
+| M10 | Hardening & launch (end of Phase 1) | ✅ done | _pending commit_ |
 | M11 | pgvector & caption embeddings | ⏳ not started | — |
 | M12 | LLM-derived structured features | ⏳ not started | — |
 | M13 | Author style + re-ranking (end of Phase 2) | ⏳ not started | — |
@@ -315,7 +315,52 @@ What's still stubbed:
 - Hardening + canary scheduled probe + Grafana dashboard + final anti-detection tuning (M10). End of Phase 1.
 - All Phase 2 work (M11–M13).
 
-Next milestone (M9): webhooks + retention. New `ig_webhooks` dispatcher with HMAC signing, retry/backoff. Triggers on score-threshold crossings (`post_score_threshold`) and tracked-target completions (`target_run_completed`). GDPR `expires_at` columns wired on `ig_comments.text` and `ig_users.biography`; nightly nullifier job present but disabled by default. Read § 14c (items 7+9) of the plan first.
+## M9 + M10 deliverables
+
+**M9 — Webhooks & retention:**
+- Migration `0003_webhooks_deliveries.py` adds `ig_webhook_deliveries` (per-attempt log) and `ig_accounts.onboarded_at` (M10 needs it for warm-up).
+- `app/services/webhooks.py` — subscribe / list / delete, `enqueue_delivery`, async `fire_pending_deliveries` dispatcher (HMAC-SHA256 signing, exponential backoff capped at 6h, `consecutive_failures >= 10` flips parent webhook to `failing`).
+- `app/api/v1/webhooks.py` — POST/GET/DELETE for subscriptions, `X-API-Key` gated.
+- Triggers wired:
+  - `update_post_score` → fires `post_score_threshold` (subscribers filter by `{"min_score": N}`).
+  - Worker on success → `target_run_completed` (only for jobs with a `scan_target_id`).
+  - Worker on challenge → `account_challenge_required`.
+- `app/services/retention.py` — `apply_default_ttl` and `nullify_expired`. Gated by `IG_RETENTION_ENABLED=false` by default.
+- `tests/test_webhooks.py` — 8 tests (signing, backoff schedule, filter matching).
+
+**M10 — Hardening & launch:**
+- `Throttle.session_should_end()` — returns True past `IG_SESSION_MAX_CALLS` or `IG_SESSION_MAX_MINUTES`.
+- Scheduler now runs 5 concurrent loops:
+  - `_heartbeat_loop`, `_tick_loop`, `_daily_loop` (existing)
+  - `_webhook_dispatch_loop` (every 5s, fires pending webhook deliveries)
+  - `_canary_loop` (when `IG_CANARY_TARGET` is set, hourly enqueues a tiny `user_feed_incremental` with `params.canary=True`)
+- `_daily_loop` now also runs retention sweep + `_promote_warmed_up_accounts` (fresh→mid after `IG_WARMUP_HOURS=72`).
+- `grafana/dashboards/ig_scraper.json` — 12-panel dashboard (counters, score histogram, job throughput, account/proxy pies, top hashtags by velocity, top scoring posts).
+- `services/ig_scraper/docs/RUNBOOK.md` — full ops playbook (account/proxy setup, common failures, Fernet key rotation, monitoring guide, Phase 2 prereqs).
+- `tests/test_session_caps.py` — 4 tests covering Throttle.session_should_end edge cases.
+
+Critical contract decisions (don't re-debate):
+- **Webhook dispatch lives in scheduler, not worker.** Deliveries don't need an Instagram account, so they don't fit `account_pool.acquire()`. Single-replica scheduler is the natural place.
+- **Signing is `X-IG-Signature: sha256=<hex>`** over the raw JSON body — same convention as GitHub / Stripe.
+- **`min_score` filter is special-cased** in `_matches_filters`. Other filters do equality matching.
+- **Retention is opt-in by default** (`IG_RETENTION_ENABLED=false`). Even when enabled, only free-text columns get null'd; engagement counters and `raw` JSONB stay.
+- **Canary uses the same job pipeline as everything else** — no special-case scrape path. The `params.canary=True` flag is the only signal, picked up by `account_pool._required_role_for_job`.
+- **Warm-up promotion runs daily, not on-demand.** Promotes `fresh` → `mid` after 72h. There's no auto `mid` → `warm` step; that's a deliberate human checkpoint.
+
+## Phase 1 — closed.
+
+The microservice is ready for production scrapes. End state:
+- 17 tables across 3 migrations.
+- 6 scrapers registered (feed full / incremental, stories, highlights, hashtag top / recent).
+- 5 worker / scheduler loops running concurrently.
+- 7 REST router groups + MCP `/mcp` with 13 tools.
+- 74/74 unit tests passing.
+- Grafana dashboard + runbook in tree.
+- Full anti-detection layer wired (per-action delays, micro-jitter, macro-pauses, session caps, active hours, tiered quotas, warm-up, adaptive backoff).
+- Webhooks deliver score crossings, target completions, challenge alerts.
+- GDPR retention plumbing ready, off by default.
+
+**Phase 2 (M11–M13) is now optional and schedulable independently:** caption embeddings via pgvector, LLM-derived structured features, author style summaries + re-ranking. None of it changes Phase 1's data model — only adds tables.
 
 ## Open questions (still unresolved — flag if a milestone touches one)
 

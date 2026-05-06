@@ -150,6 +150,19 @@ class Settings(BaseSettings):
     IG_MIN_MEDIA_FOR_ENRICH: int = Field(default=12)
     IG_MIN_SCORE_FOR_ENRICH: float = Field(default=50.0)
 
+    # ----- Webhooks (M9) -----
+    IG_WEBHOOK_DISPATCH_INTERVAL_SECONDS: int = Field(default=5)
+    IG_WEBHOOK_BATCH_SIZE: int = Field(default=25)
+
+    # ----- Retention / GDPR (M9) -----
+    IG_RETENTION_ENABLED: bool = Field(default=False)
+    IG_COMMENT_TTL_DAYS: int = Field(default=0, description="0 = never expire.")
+    IG_BIOGRAPHY_TTL_DAYS: int = Field(default=0)
+
+    # ----- Canary (M10) -----
+    IG_CANARY_TARGET: Optional[str] = Field(default=None, description="Username probed hourly with the canary account.")
+    IG_CANARY_INTERVAL_HOURS: int = Field(default=1)
+
     # ----- Scoring (deterministic, Phase 1) -----
     IG_SCORE_HALFLIFE_DAYS: float = Field(default=14.0)
     IG_SCORE_W_ENGAGEMENT: float = Field(default=0.20)

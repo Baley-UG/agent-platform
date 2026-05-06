@@ -86,12 +86,47 @@ async def _process_one_job(loop_id: int) -> bool:
             if result.outcome == "success":
                 jobs.mark_succeeded(session, job.id, result.stats)
                 account_pool.release(session, acquired, "success")
+                # M9 — fire target_run_completed when the job belonged
+                # to a tracked target. Best-effort: never fail the job
+                # because of a webhook bookkeeping blip.
+                if job.scan_target_id is not None:
+                    try:
+                        from app.services import webhooks as webhooks_service
+
+                        webhooks_service.enqueue_delivery(
+                            session,
+                            event_type="target_run_completed",
+                            payload={
+                                "target_id": str(job.scan_target_id),
+                                "job_id": str(job.id),
+                                "job_type": job.job_type,
+                                "target": job.target,
+                                "stats": result.stats,
+                            },
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.exception("worker_webhook_enqueue_failed")
             elif result.outcome in {"soft_fail", "rate_limited"}:
                 jobs.mark_retry(session, job.id, result.error or result.outcome)
                 account_pool.release(session, acquired, result.outcome, detail=result.error)
             elif result.outcome == "challenge":
                 jobs.mark_retry(session, job.id, result.error or "challenge required")
                 account_pool.release(session, acquired, "challenge", detail=result.error)
+                try:
+                    from app.services import webhooks as webhooks_service
+
+                    webhooks_service.enqueue_delivery(
+                        session,
+                        event_type="account_challenge_required",
+                        payload={
+                            "account_id": str(acquired.account.id),
+                            "username": acquired.account.username,
+                            "job_id": str(job.id),
+                            "detail": result.error,
+                        },
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception("worker_webhook_enqueue_failed")
             elif result.outcome == "fatal":
                 jobs.mark_failed(session, job.id, result.error or "fatal")
                 account_pool.release(session, acquired, "fatal", detail=result.error)

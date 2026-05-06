@@ -35,6 +35,7 @@ class Account(SQLModel, table=True):
     weekday_pattern: int = Field(default=127, description="Bitmap Mon=1..Sun=64; 127 = all days.")
     quota_tier: str = Field(default="fresh")
     cooldown_until: Optional[datetime] = Field(default=None)
+    onboarded_at: Optional[datetime] = Field(default=None)
     last_used_at: Optional[datetime] = Field(default=None)
     last_login_at: Optional[datetime] = Field(default=None)
     failure_count: int = Field(default=0)

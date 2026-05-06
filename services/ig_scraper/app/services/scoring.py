@@ -290,6 +290,27 @@ def update_post_score(session: Session, post_id: int) -> Optional[ScoreResult]:
         ),
         {"score": result.score, "pid": post_id},
     )
+
+    # Webhook trigger — fire-and-forget enqueue. Failures here must
+    # never block the scrape, so we swallow exceptions (the dispatcher
+    # gets retried regardless).
+    try:
+        from app.services import webhooks as webhooks_service
+
+        webhooks_service.enqueue_delivery(
+            session,
+            event_type="post_score_threshold",
+            payload={
+                "post_id": post_id,
+                "author_id": int(author_id) if author_id else None,
+                "score": float(result.score),
+                "components": result.components,
+                "computed_at": now.isoformat(),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("webhook_enqueue_failed", post_id=post_id, error=str(exc))
+
     return result
 
 

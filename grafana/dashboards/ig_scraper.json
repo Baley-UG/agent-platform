@@ -1,0 +1,178 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Posts saved (24h)",
+      "id": 1,
+      "datasource": {"type": "postgres", "uid": "${DS_POSTGRES}"},
+      "gridPos": {"x": 0, "y": 0, "w": 4, "h": 4},
+      "targets": [{
+        "format": "table",
+        "rawQuery": true,
+        "rawSql": "SELECT COUNT(*) AS value FROM ig_posts WHERE first_seen_at >= now() - interval '24 hours'"
+      }]
+    },
+    {
+      "type": "stat",
+      "title": "Stories captured (24h)",
+      "id": 2,
+      "datasource": {"type": "postgres", "uid": "${DS_POSTGRES}"},
+      "gridPos": {"x": 4, "y": 0, "w": 4, "h": 4},
+      "targets": [{
+        "format": "table",
+        "rawQuery": true,
+        "rawSql": "SELECT COUNT(*) AS value FROM ig_stories WHERE captured_at >= now() - interval '24 hours'"
+      }]
+    },
+    {
+      "type": "stat",
+      "title": "Active accounts",
+      "id": 3,
+      "datasource": {"type": "postgres", "uid": "${DS_POSTGRES}"},
+      "gridPos": {"x": 8, "y": 0, "w": 4, "h": 4},
+      "targets": [{
+        "format": "table",
+        "rawQuery": true,
+        "rawSql": "SELECT COUNT(*) AS value FROM ig_accounts WHERE status = 'active'"
+      }]
+    },
+    {
+      "type": "stat",
+      "title": "Tracked targets",
+      "id": 4,
+      "datasource": {"type": "postgres", "uid": "${DS_POSTGRES}"},
+      "gridPos": {"x": 12, "y": 0, "w": 4, "h": 4},
+      "targets": [{
+        "format": "table",
+        "rawQuery": true,
+        "rawSql": "SELECT COUNT(*) AS value FROM ig_scan_targets WHERE status = 'active'"
+      }]
+    },
+    {
+      "type": "stat",
+      "title": "Pending review (auto-discovered)",
+      "id": 5,
+      "datasource": {"type": "postgres", "uid": "${DS_POSTGRES}"},
+      "gridPos": {"x": 16, "y": 0, "w": 4, "h": 4},
+      "targets": [{
+        "format": "table",
+        "rawQuery": true,
+        "rawSql": "SELECT COUNT(*) AS value FROM ig_scan_targets WHERE status = 'pending_review'"
+      }]
+    },
+    {
+      "type": "barchart",
+      "title": "Score distribution",
+      "id": 10,
+      "datasource": {"type": "postgres", "uid": "${DS_POSTGRES}"},
+      "gridPos": {"x": 0, "y": 4, "w": 12, "h": 8},
+      "targets": [{
+        "format": "table",
+        "rawQuery": true,
+        "rawSql": "SELECT (FLOOR(score / 10) * 10)::int AS bucket, COUNT(*) AS posts FROM ig_posts WHERE score IS NOT NULL AND first_seen_at >= now() - interval '7 days' GROUP BY bucket ORDER BY bucket"
+      }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Job throughput (last 24h, by status)",
+      "id": 11,
+      "datasource": {"type": "postgres", "uid": "${DS_POSTGRES}"},
+      "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8},
+      "targets": [{
+        "format": "time_series",
+        "rawQuery": true,
+        "rawSql": "SELECT date_trunc('hour', COALESCE(finished_at, started_at, created_at)) AS time, status AS metric, COUNT(*) AS value FROM ig_scrape_jobs WHERE COALESCE(finished_at, started_at, created_at) >= now() - interval '24 hours' GROUP BY time, status ORDER BY time"
+      }]
+    },
+    {
+      "type": "piechart",
+      "title": "Account status",
+      "id": 12,
+      "datasource": {"type": "postgres", "uid": "${DS_POSTGRES}"},
+      "gridPos": {"x": 0, "y": 12, "w": 8, "h": 8},
+      "targets": [{
+        "format": "table",
+        "rawQuery": true,
+        "rawSql": "SELECT status, COUNT(*) AS value FROM ig_accounts GROUP BY status"
+      }]
+    },
+    {
+      "type": "piechart",
+      "title": "Proxy status",
+      "id": 13,
+      "datasource": {"type": "postgres", "uid": "${DS_POSTGRES}"},
+      "gridPos": {"x": 8, "y": 12, "w": 8, "h": 8},
+      "targets": [{
+        "format": "table",
+        "rawQuery": true,
+        "rawSql": "SELECT status, COUNT(*) AS value FROM ig_proxies GROUP BY status"
+      }]
+    },
+    {
+      "type": "stat",
+      "title": "Account challenges (24h)",
+      "id": 14,
+      "datasource": {"type": "postgres", "uid": "${DS_POSTGRES}"},
+      "gridPos": {"x": 16, "y": 12, "w": 8, "h": 4},
+      "targets": [{
+        "format": "table",
+        "rawQuery": true,
+        "rawSql": "SELECT COALESCE(SUM(challenge_count), 0) AS value FROM ig_usage_daily WHERE date >= current_date - 1"
+      }]
+    },
+    {
+      "type": "stat",
+      "title": "Webhook deliveries failing",
+      "id": 15,
+      "datasource": {"type": "postgres", "uid": "${DS_POSTGRES}"},
+      "gridPos": {"x": 16, "y": 16, "w": 8, "h": 4},
+      "targets": [{
+        "format": "table",
+        "rawQuery": true,
+        "rawSql": "SELECT COUNT(*) AS value FROM ig_webhook_deliveries WHERE status = 'failed' AND created_at >= now() - interval '24 hours'"
+      }]
+    },
+    {
+      "type": "table",
+      "title": "Top hashtags by velocity",
+      "id": 20,
+      "datasource": {"type": "postgres", "uid": "${DS_POSTGRES}"},
+      "gridPos": {"x": 0, "y": 20, "w": 12, "h": 10},
+      "targets": [{
+        "format": "table",
+        "rawQuery": true,
+        "rawSql": "SELECT hashtag, last_week_count, prior_week_count, post_delta, ROUND(last_week_avg_score::numeric, 1) AS last_week_avg_score FROM ig_hashtag_velocity ORDER BY post_delta DESC NULLS LAST LIMIT 25"
+      }]
+    },
+    {
+      "type": "table",
+      "title": "Top scoring posts (last 7 days)",
+      "id": 21,
+      "datasource": {"type": "postgres", "uid": "${DS_POSTGRES}"},
+      "gridPos": {"x": 12, "y": 20, "w": 12, "h": 10},
+      "targets": [{
+        "format": "table",
+        "rawQuery": true,
+        "rawSql": "SELECT u.username AS author, p.code, p.like_count, p.play_count, ROUND(p.score::numeric, 1) AS score, p.taken_at FROM ig_posts p JOIN ig_users u ON u.id = p.author_id WHERE p.taken_at >= now() - interval '7 days' AND p.score IS NOT NULL ORDER BY p.score DESC LIMIT 25"
+      }]
+    }
+  ],
+  "refresh": "5m",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["ig-scraper"],
+  "templating": {"list": []},
+  "time": {"from": "now-24h", "to": "now"},
+  "timezone": "browser",
+  "title": "ig_scraper — Phase 1",
+  "uid": "ig-scraper-p1",
+  "version": 1,
+  "weekStart": ""
+}

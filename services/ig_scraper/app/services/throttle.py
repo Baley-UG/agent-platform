@@ -87,14 +87,39 @@ class Throttle:
     Holds the call counter and the next-macro-pause threshold so the
     scraper can call `await throttle.maybe_macro_pause()` after each
     action without owning the bookkeeping itself.
+
+    `session_started_at` is set in __post_init__ so `session_should_end()`
+    can compute elapsed wall time. The worker checks this between
+    actions and ends the session early when caps are hit (§ 5.3 D).
     """
 
     calls_made: int = 0
     next_macro_pause_at: int = field(default=0)
     long_break_used: bool = False
+    session_started_at: float = field(default=0.0)
 
     def __post_init__(self) -> None:
+        import time as _time
+
+        self.session_started_at = _time.monotonic()
         self._reset_macro_threshold()
+
+    def session_should_end(self) -> bool:
+        """True when we've crossed any of the session caps from § 5.3 D.
+
+        - IG_SESSION_MAX_CALLS instagrapi calls.
+        - IG_SESSION_MAX_MINUTES wall clock.
+
+        Continuous-API-time is enforced implicitly by macro pauses
+        (which reset the call counter expectation rather than the
+        wall clock); we keep the simpler two-cap variant here.
+        """
+        if self.calls_made >= settings.IG_SESSION_MAX_CALLS:
+            return True
+        import time as _time
+
+        elapsed_minutes = (_time.monotonic() - self.session_started_at) / 60.0
+        return elapsed_minutes >= settings.IG_SESSION_MAX_MINUTES
 
     def _reset_macro_threshold(self) -> None:
         delta = random.randint(

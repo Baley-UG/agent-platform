@@ -19,6 +19,7 @@ from app.models.target import ScanTarget
 from app.models.usage import UsageDaily
 from app.models.user import IgUser
 from app.models.webhook import Webhook
+from app.models.webhook_delivery import WebhookDelivery
 
 __all__ = [
     "Account",
@@ -37,5 +38,6 @@ __all__ = [
     "Story",
     "UsageDaily",
     "Webhook",
+    "WebhookDelivery",
     "WorkerHeartbeat",
 ]
