@@ -78,3 +78,19 @@ async def dispatch(
     """Route a job to its registered scraper, or fall back to the stub."""
     fn = _REGISTRY.get(job.job_type, _stub_scraper)
     return await fn(job, account, proxy)
+
+
+# ----------------------------------------------------------------------
+# Eager registration of real scrapers.
+# Imports live at the bottom to avoid circular-import problems at
+# module load (user_feed imports from .persistence which imports from
+# .features which imports from .simhash — none of those need scrapers).
+# ----------------------------------------------------------------------
+
+from app.services.scrapers.user_feed import (  # noqa: E402
+    run_user_feed_full,
+    run_user_feed_incremental,
+)
+
+register("user_feed_full", run_user_feed_full)
+register("user_feed_incremental", run_user_feed_incremental)

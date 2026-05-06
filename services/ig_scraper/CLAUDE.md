@@ -56,8 +56,8 @@ and starts where you left off.
 | - | - | - | - |
 | M1 | Foundations | ✅ done | _see git log_ |
 | M2 | Account & proxy management | ✅ done | _see git log_ |
-| M3 | Job queue + worker | ✅ done | _pending commit_ |
-| M4 | Feed scrape flows | ⏳ not started | — |
+| M3 | Job queue + worker | ✅ done | _see git log_ |
+| M4 | Feed scrape flows | ✅ done | _pending commit_ |
 | M5 | Stories & highlights | ⏳ not started | — |
 | M5.5 | MCP read surface | ⏳ not started | — |
 | M6 | Hashtag scan + author enrichment | ⏳ not started | — |
@@ -173,7 +173,40 @@ What's still stubbed:
 - Tracked-targets registry (`/targets`) and the scheduler — M7.
 - Score computation (M8), webhooks (M9).
 
-Next milestone (M4): user_feed_full + user_feed_incremental scrapers. Calls instagrapi `user_id_from_username_v1`, `user_info_v1`, `user_medias_paginated_v1` (+ `user_clips_paginated_v1` merge). Persists posts + comments + caption features + simhash + audio normalization. Writes a `ig_post_metric_snapshots` row on every upsert. Cursor management on `ig_scan_targets`. Read § 6.1–6.2 of the plan first.
+## M4 deliverables
+
+What landed in M4:
+- `app/services/simhash.py` — 64-bit Charikar simhash from caption tokens. ~30 LOC, no external deps. Round-trip helpers `to_signed_64`/`from_signed_64` because Postgres BIGINT is signed.
+- `app/services/features.py` — `extract(caption)` returns `CaptionFeatures` with language (langdetect), emoji_count (Unicode-range regex), hashtag/mention extraction, has_question (`?` + Turkish particles `mi/mı/mu/mü`), has_cta (TR + EN imperative regex), simhash. Empty/None captions short-circuit to zeros.
+- `app/services/filters.py` — `passes_filter(...)` with the three-clause rule from § 7. `play_count` preferred over `view_count` for the impressions check; both null = treated as 0 (so photo-only targets with `min_impressions` set skip everything, as documented).
+- `app/services/throttle.py` — `human_delay(action)` lognormal-clipped per `_range_for(action)`, `micro_jitter()` for inside-loop wobble, `Throttle` class with macro-pause + long-break logic from § 5.3 A–C.
+- `app/services/persistence/` package — `upsert_ig_user`, `upsert_hashtag`, `upsert_audio_track`, `upsert_post`, `upsert_comments`. All single-statement `INSERT ... ON CONFLICT DO UPDATE` idioms; `upsert_post` writes the metric snapshot inline, materialises hashtag rows, and stores feature columns.
+- `app/services/scrapers/user_feed.py` — `run_user_feed_full` and `run_user_feed_incremental`. Walk both `user_medias_paginated_v1` and `user_clips_paginated_v1`, merge by pk, apply filter, persist (post + snapshot + hashtags + audio), optionally fetch comments. Cursor update at end via `ig_scan_targets.last_seen_post_id` / `last_seen_taken_at` / `next_run_at` (with ±jitter from `IG_TARGET_INTERVAL_JITTER_PCT`).
+- `app/services/scrapers/__init__.py` — registers both scrapers with the dispatcher.
+- New tests: `test_features.py` (8 tests, TR + EN coverage), `test_filters.py` (6), `test_throttle.py` (3). All deterministic — `asyncio.sleep` is patched in throttle tests so they run in milliseconds.
+
+What works now (verified):
+- 31/31 unit tests green (5 crypto + 7 account_pool + 2 jobs_validation + 8 features + 6 filters + 3 throttle).
+- `import app.services.scrapers` registers both real scrapers; the dispatcher hits them, not the stub.
+- Caption features handle Turkish: `mi` particle catches questions without `?`, biography/CTA patterns include `biyodaki`, `paylaş`, `kaydet`, etc.
+- Simhash determinism guaranteed (md5-seeded), Hamming distance correctly orders near-vs-far captions.
+
+Critical contract decisions made in M4 (don't re-debate):
+- **Reels merge is unconditional**: full backfill walks both `user_medias` AND `user_clips` and dedupes by pk. Some accounts post reels-only; this catches them at the cost of one extra paginator pass.
+- **Cursor-stop is conservative**: incremental walker stops on EITHER `last_seen_post_id` match OR `taken_at <= last_seen_taken_at`. The taken_at fallback handles the "pinned/deleted post drops out of feed" case so we never re-scrape from the start by accident.
+- **Comments fetched only for posts that pass the filter**, plan § 6.2. Saves the per-post comment API call on rejected posts.
+- **Persistence is per-post-transactional**: each `upsert_post` runs in its own `session_scope` so a single bad media payload can't roll back already-persisted siblings. Trade-off: more commits, slower; can batch later if profiling demands.
+- **Job-typed media URLs**: `media_urls` is a JSONB array of all CDN URLs (video_url, thumbnail_url, image_versions2 candidates, carousel children). Order best-effort; downstream consumers should not rely on it.
+- **`raw` columns hold the full instagrapi payload** so we can re-derive features without re-scraping when the extractor improves.
+
+What's still stubbed:
+- `user_stories` and `user_highlights` (M5).
+- Hashtag scrapers + author enrichment (M6).
+- Tracked-targets registry + scheduler (M7).
+- Score (M8). Snapshots are being written; computation isn't.
+- Webhooks (M9).
+
+Next milestone (M5): `user_stories` (insert-only into `ig_stories`) and `user_highlights` (opt-in via `fetch_highlights=true`, populates `ig_highlights` + `ig_highlight_items`). Stories are ephemeral so missing a daily run = permanently lost data. Read § 6.3–6.4 of the plan first.
 
 ## Open questions (still unresolved — flag if a milestone touches one)
 
