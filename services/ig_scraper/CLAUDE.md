@@ -54,7 +54,7 @@ and starts where you left off.
 
 | ID | Title | Status | Commit |
 | - | - | - | - |
-| M1 | Foundations | ⏳ not started | — |
+| M1 | Foundations | ✅ done | _pending commit_ |
 | M2 | Account & proxy management | ⏳ not started | — |
 | M3 | Job queue + worker | ⏳ not started | — |
 | M4 | Feed scrape flows | ⏳ not started | — |
@@ -89,6 +89,36 @@ Status legend: ⏳ not started · 🔄 in progress · ✅ done · 🚧 blocked.
 4. Read the corresponding section of `docs/instagram-scraper-plan.md`.
 5. Implement, test, commit, mark the row ✅ in this file with the commit
    SHA, push.
+
+## M1 deliverables (reference for the next session)
+
+What landed in M1:
+- `pyproject.toml` (deps: fastapi, instagrapi, sqlmodel, alembic, psycopg, structlog, prometheus, slowapi, cryptography, pydantic-settings, pillow).
+- `Dockerfile` (Python 3.13 slim + uv, port 8081, default CMD = uvicorn).
+- `alembic.ini` + `alembic/env.py` + `alembic/versions/0001_initial_phase1.py` — creates all 17 Phase-1 tables in one migration with the indexes specified in the plan.
+- `app/core/config.py` — pydantic-settings reading shared `POSTGRES_*` and the full `IG_*` knob set; `PROJECT_NAME`/`VERSION` are `ClassVar` so they don't collide with the main app's env.
+- `app/core/logging.py` — structlog (JSON in non-dev, dev-coloured otherwise).
+- `app/core/metrics.py` — Prometheus middleware + `/metrics`; pre-declared counters (`ig_jobs_total`, `ig_posts_saved_total`, `ig_account_failures_total`, ...) ready for later milestones.
+- `app/services/database.py` — primary engine + optional read replica (`session_scope`, `read_session_scope`, `health_check`).
+- `app/models/*` — SQLModel definitions for every Phase-1 table.
+- `app/main.py` — FastAPI app with `/health`, `/ready`, `/`, `/metrics`, OpenAPI at `/api/v1/openapi.json`. CORS, structured validation errors, lifespan hooks.
+- `app/api/v1/{api,deps,health,jobs,accounts,proxies,targets}.py` — router stubs returning 501 with milestone reference; auth dep (`require_api_key`) wired everywhere it should be.
+- `app/worker.py` and `app/scheduler.py` — placeholder long-running processes so docker-compose has something to start.
+- Root `docker-compose.yml` — three new services: `ig-scraper-api` (8081), `ig-scraper-worker`, `ig-scraper-scheduler`. All share one image.
+- Root `.env.example` — every `IG_*` knob documented with sensible defaults.
+
+What works now (verified):
+- `python -c "import app.main"` loads cleanly.
+- All 17 tables register on `SQLModel.metadata`.
+- All 27 routes wire up correctly.
+- `alembic upgrade head --sql` emits valid PostgreSQL DDL.
+
+What's deliberately stubbed (will fail with 501):
+- `POST /jobs` and friends → M3.
+- Account / proxy CRUD → M2.
+- Target CRUD → M7.
+
+Next milestone (M2): account & proxy CRUD, Fernet encryption, login flow that populates `session_blob`, proxy connectivity test endpoint. Read § 5.1–5.2 of the plan first.
 
 ## Open questions (still unresolved — flag if a milestone touches one)
 

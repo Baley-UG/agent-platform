@@ -116,6 +116,70 @@ services:
     networks:
       - monitoring
 
+  # --------------------------------------------------------------------
+  # ig_scraper microservice — three roles, same image
+  # --------------------------------------------------------------------
+  ig-scraper-api:
+    build:
+      context: ./services/ig_scraper
+      args:
+        APP_ENV: ${APP_ENV:-development}
+    env_file:
+      - .env
+    environment:
+      - APP_ENV=${APP_ENV:-development}
+      - POSTGRES_HOST=${POSTGRES_HOST:-db}
+    ports:
+      - "8081:8081"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: on-failure
+    networks:
+      - monitoring
+
+  ig-scraper-worker:
+    build:
+      context: ./services/ig_scraper
+      args:
+        APP_ENV: ${APP_ENV:-development}
+    command: ["/app/.venv/bin/python", "-m", "app.worker"]
+    env_file:
+      - .env
+    environment:
+      - APP_ENV=${APP_ENV:-development}
+      - POSTGRES_HOST=${POSTGRES_HOST:-db}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: on-failure
+    networks:
+      - monitoring
+
+  ig-scraper-scheduler:
+    build:
+      context: ./services/ig_scraper
+      args:
+        APP_ENV: ${APP_ENV:-development}
+    command: ["/app/.venv/bin/python", "-m", "app.scheduler"]
+    env_file:
+      - .env
+    environment:
+      - APP_ENV=${APP_ENV:-development}
+      - POSTGRES_HOST=${POSTGRES_HOST:-db}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: on-failure
+    networks:
+      - monitoring
+
 
 networks:
   monitoring:
