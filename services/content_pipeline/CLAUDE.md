@@ -56,7 +56,7 @@ left off.
 | ID | Title | Status | Commit |
 | - | - | - | - |
 | CP-M1 | Skeleton, data model, storage, project CRUD | ✅ done | abfdac4 |
-| CP-M2 | References + intake + analyzer | ⏳ not started | — |
+| CP-M2 | References + intake + analyzer | ✅ done | _pending commit_ |
 | CP-M3 | Image generation + multi-aspect | ⏳ not started | — |
 | CP-M4 | Video generation | ⏳ not started | — |
 | CP-M5 | Audio + compose (end of Phase 1) | ⏳ not started | — |
@@ -146,6 +146,45 @@ What's deliberately stubbed:
 - Worker job dispatch — CP-M2 onward.
 - Real scheduler cron jobs — CP-M6.
 - IG / TikTok publishers — CP-M6 / CP-M7.
+
+## CP-M2 deliverables
+
+What landed in CP-M2:
+- 3 new tables: `reference_intake_rules`, `scenarios` (with `previous_scenario_json` + `version` for regenerate-with-rollback), `reference_usages` (audit row per (reference, scenario) pair). Migration `0003_cp_m2_scenarios`.
+- `app/services/scraper_bridge.py` — read-only SELECT against `ig_scraper.ig_posts` (cross-schema, public schema in same DB) returning a plain dict, no shared SQLModel coupling.
+- `content_references` API: `POST /upload` (admin already PUT bytes via presigned URL), `POST /import-from-scraper` (by ig_posts.pk), list/get/patch/archive, `GET /{id}/usage-check`.
+- `reference_intake_rules` API: CRUD + `app/services/intake_rules.py` matcher (`min_score`, `min_engagement_rate`, `min_likes`, `min_play_count`, `posted_within_days`, `min_duration_sec`, `max_duration_sec`, `media_types`, `language`, `must_have_caption`, `from_tracked_targets`). Unknown keys ignored (forward-compat). The cron-style scraper subscriber that *invokes* the matcher lands in CP-M2.5.
+- `GET /projects/{pid}/inbox/candidates` — shortcut for `references?status=candidate`.
+- `app/services/providers/llm/openrouter.py` — concrete `LLMProvider` impl. Vision via `image_url` parts, `response_format=json_object` toggle, latency timing, returns normalized `LLMResponse` with input/output/cached tokens + computed `cost_usd` from `model_routes.cost_per_unit_usd`.
+- `app/services/analyzer.py` — `build_user_prompt`, `parse_scenario_json` (tolerant of fenced ```json``` and chatter prefix), `validate_scenario` (shape check), `analyze_reference` (orchestrator returning `(scenario_json, llm_response)`).
+- `app/services/scenarios.py` — full state machine + `_ALLOWED_NEXT` map, reuse-policy gate (`block` always denies, `warn` requires `force=true`, `silent` no-op), `_derive_aspect_groups` (PRESETS-aligned: ig_reels/story/tiktok/shorts → `9:16`; ig_feed_45 → `4:5`; ig_feed_11 → `1:1`).
+- `app/services/queue.py` — single-purpose RQ enqueue helper. Uses `func_path` strings so the API doesn't import worker code.
+- `app/services/generation_calls.py` — ledger writer that also bumps `scenarios.generation_cost_usd` and increments Prometheus counters.
+- `app/workers/analyzer.py` — RQ task `app.workers.analyzer.run(scenario_id)`. Resolves the route via `model_router`, picks a concrete provider, runs the async analyzer in `asyncio.run`, records `generation_calls`, transitions to `pending_review` or `failed`.
+- `scenarios` API: `POST /` (auto-enqueues analyzer, soft-fails if Redis is down), `POST /{id}/analyze`, `PATCH /{id}` (only in `draft`/`pending_review`), `POST /{id}/approve`, `POST /{id}/regenerate` (snapshots into `previous_scenario_json`, bumps `version`).
+- 25 new unit tests across `test_analyzer_parse.py`, `test_intake_matcher.py`, `test_scenario_state_machine.py`, plus expanded `test_smoke.py` table/route assertions. **33/33 green.**
+
+What works now (verified):
+- `pytest tests/` → 33/33.
+- `alembic upgrade head --sql` emits all 12 tables (9 from CP-M1 + 3 from CP-M2) with valid Postgres DDL.
+- All declared routes register on `app.routes`.
+
+Critical contract decisions (don't re-debate):
+- **Analyzer output is JSON-strict** — system prompt enforces it; parse layer is tolerant of fenced/chatter wrappers because LLMs occasionally drift.
+- **Originality is a system-prompt rule, not a post-filter.** The reference's caption/transcript/metadata is fed to the analyzer; the analyzer is instructed to produce same-genre/mood scenarios without copying frames or quotes. CP-M3 will not pipe original frames into the image generator either.
+- **Reuse policy is enforced on `scenarios.create`, NOT on `references.create`.** Importing the same reference twice is fine; spawning a second scenario from it is what triggers the `reuse_policy` gate (block/warn/silent).
+- **Aspect-group fan-out is precomputed at scenario-create time** and stored in `scenarios.target_aspect_groups`. CP-M3 reads that array to know how many image-gen jobs to enqueue per scene. Variants (ig_reels vs tiktok) within the same aspect group share scene masters.
+- **`scraper_bridge` issues raw SQL**, not SQLModel. The scraper's models live in a different package; coupling our migrations to theirs would create a deploy-order trap. Plain SELECT through the read engine is enough for a one-shot pull on import.
+- **`previous_scenario_json` only holds ONE prior version.** Long history isn't a CP-M2 goal — admins who need it can pull from `generation_calls` for cost trace and from S3 for assets. If multi-version rollback turns out to be a real need, add a `scenario_versions` audit table.
+- **The analyzer worker uses `asyncio.run` per job.** RQ workers are sync; Python lets us spin up an event loop per task. Acceptable for the analyzer's IO-bound LLM calls; CP-M3 image_gen will follow the same pattern.
+- **Provider auth lives in env** (`OPENROUTER_API_KEY`, `FAL_KEY`, `SEEDANCE_API_KEY`, `ELEVENLABS_API_KEY`). The *model selection* lives in `model_routes` — admins change models without redeploys; rotating provider secrets still requires an env-and-restart.
+- **Reuse policy `block` denies even with `force=true`.** That's by design — projects opt into block deliberately when they want a hard rule. Loosen to `warn` if you want override.
+
+What's deliberately stubbed:
+- Scraper-driven auto-intake (Redis pub/sub subscriber that runs the matcher) — CP-M2.5 polish.
+- Reference media auto-mirror to S3 on import-from-scraper — caller can fetch lazily; CP-M3 image generator never needs the original anyway.
+- Concrete providers for `fal`, `seedance`, `elevenlabs` — CP-M3..CP-M5.
+- `scene_renders`, `render_variants`, `media_assets` writes — CP-M3.
 
 ## Open questions (still unresolved — flag if a milestone touches one)
 

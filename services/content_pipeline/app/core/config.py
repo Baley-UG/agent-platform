@@ -125,6 +125,24 @@ class Settings(BaseSettings):
     # ----- API host port (override when 8082 is taken) -----
     CP_HOST_PORT: int = Field(default=8082)
 
+    # ----- Provider auth (concrete clients land in CP-M2..CP-M5) -----
+    # Model selection itself lives in `model_routes` (admin-editable);
+    # here we only carry the secret used when the route's provider matches.
+    OPENROUTER_API_KEY: Optional[str] = Field(default=None)
+    OPENROUTER_BASE_URL: str = Field(default="https://openrouter.ai/api/v1")
+    OPENROUTER_HTTP_REFERER: Optional[str] = Field(
+        default=None,
+        description="Optional X-Title / HTTP-Referer headers help OpenRouter dashboards group calls.",
+    )
+
+    FAL_KEY: Optional[str] = Field(default=None)
+    SEEDANCE_API_KEY: Optional[str] = Field(default=None)
+    ELEVENLABS_API_KEY: Optional[str] = Field(default=None)
+
+    # Analyzer knobs
+    CP_ANALYZER_MAX_KEYFRAMES: int = Field(default=8)
+    CP_ANALYZER_HTTP_TIMEOUT_SECONDS: float = Field(default=120.0)
+
     @property
     def postgres_dsn(self) -> str:
         """Primary Postgres DSN (psycopg driver)."""

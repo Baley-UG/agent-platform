@@ -11,6 +11,9 @@ from app.models.media_assets import MediaAsset
 from app.models.model_routes import ModelRoute
 from app.models.music import MusicTrack
 from app.models.projects import Project
+from app.models.reference_intake_rules import ReferenceIntakeRule
+from app.models.reference_usages import ReferenceUsage
+from app.models.scenarios import SCENARIO_STATUSES, Scenario
 from app.models.social_accounts import SocialAccount
 from app.models.templates import Template
 
@@ -19,6 +22,10 @@ __all__ = [
     "BrandKit",
     "SocialAccount",
     "ContentReference",
+    "ReferenceIntakeRule",
+    "ReferenceUsage",
+    "Scenario",
+    "SCENARIO_STATUSES",
     "Template",
     "MusicTrack",
     "MediaAsset",
