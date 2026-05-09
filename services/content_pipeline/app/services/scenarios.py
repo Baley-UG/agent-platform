@@ -241,6 +241,23 @@ def start_image_generation(session: Session, project_id: uuid.UUID, scenario_id:
     return row
 
 
+def start_video_generation(session: Session, project_id: uuid.UUID, scenario_id: uuid.UUID) -> Scenario:
+    """Move from `images_ready` to `generating_videos`. Caller must enqueue
+    video_gen jobs for each scene_render that's `image_ready`.
+    """
+    row = get(session, project_id, scenario_id)
+    if row.status != "images_ready":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"cannot start videos from status={row.status}; finish images_ready first",
+        )
+    transition(row, "generating_videos")
+    session.add(row)
+    session.flush()
+    session.refresh(row)
+    return row
+
+
 def begin_regenerate(session: Session, project_id: uuid.UUID, scenario_id: uuid.UUID) -> Scenario:
     """Snapshot the current scenario_json into previous_*, bump version, mark analyzing.
 

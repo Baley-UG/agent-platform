@@ -58,7 +58,7 @@ left off.
 | CP-M1 | Skeleton, data model, storage, project CRUD | ✅ done | abfdac4 |
 | CP-M2 | References + intake + analyzer | ✅ done | b7115d3 |
 | CP-M3 | Image generation + multi-aspect | ✅ done | aeb3750 |
-| CP-M4 | Video generation | ⏳ not started | — |
+| CP-M4 | Video generation | ✅ done | _pending commit_ |
 | CP-M5 | Audio + compose (end of Phase 1) | ⏳ not started | — |
 | CP-M6 | Posting strategy + weekly plan + IG publish | ⏳ not started | — |
 | CP-M7 | TikTok + auto-generation | ⏳ not started | — |
@@ -227,6 +227,42 @@ What's deliberately stubbed:
 - Seed pinning for deterministic regenerates — `provider.generate(seed=...)` is wired but the API doesn't surface it. CP-M8.
 - Video generation — CP-M4 picks up where image_gen leaves off.
 - Image upscaling / face fixing / model fallback chain — CP-M8 if needed.
+
+## CP-M4 deliverables
+
+What landed in CP-M4:
+- `app/services/providers/video/base.py` — `VideoProvider` ABC + `VideoResponse` dataclass.
+- `app/services/providers/video/seedance_fal.py` — Seedance image-to-video via fal.ai's async queue at `https://queue.fal.run/<model_id>`. Submit → poll status_url with 5s→30s backoff (capped at `CP_VIDEO_GEN_TIMEOUT_SECONDS=600`) → fetch response_url → download video bytes from fal CDN. Cost computed from `cost_unit='video_second'` × scene duration. Falls back from `SEEDANCE_API_KEY` to `FAL_KEY` so the user can keep one key today and split later.
+- Migration `0005_cp_m4_seedance_route` updates the global `scene_video` row's `model_id` from the placeholder `seedance-v1-pro-i2v` to fal.ai's actual route name `fal-ai/bytedance/seedance/v1/pro/image-to-video`. Idempotent + reversible.
+- `app/services/scene_renders.py` — added `mark_generating_video`, `mark_video_ready`, `claim_for_video_regenerate` (refuses if no image yet), `renders_with_video_pending` (the `image_ready` queryset that the start-videos endpoint feeds to the worker).
+- `app/services/scenarios.py` — added `start_video_generation(...)` gating `images_ready → generating_videos`.
+- `app/workers/video_gen.py` — RQ task `app.workers.video_gen.run(scene_render_id, motion_override=None)`. Reads scene_render.image_asset_id, presigns a short-lived S3 GET URL for the provider, runs async Seedance call inside `asyncio.run`, uploads bytes to `projects/{pid}/scenes/<scenario_id>-scene-<idx>-<aspect>.mp4`, writes versioned `media_assets` (initial or `replace(prior, ...)` chain), links `scene_render.video_asset_id`, records `generation_calls` with `video_seconds` + `cost_usd`, rolls up scenario status. Helper functions are pure: `_motion_prompt` (falls back from motion_prompt → image_prompt + generic motion → completely-empty default), `_scene_duration` (rejects 0 / negative).
+- `app/schemas/scene_renders.py` — added `RegenerateVideoRequest`.
+- API additions on the scenarios router:
+  - `POST /scenarios/{id}/start-videos` — transitions state, enqueues a video_gen job for every render that's `image_ready`.
+  - `POST /scenarios/{id}/scenes/{idx}/regenerate-video` — body `{aspect_ratio?, motion_override?}`. Without aspect_ratio regenerates ALL aspect-group masters for that scene; with one, just that variant.
+- Tests (8 new, **56/56 green**):
+  - `test_video_gen_helpers.py` — scene lookup, motion fallback chain, duration coercion (positive only).
+  - Smoke test extended for the 2 new routes.
+
+What works now (verified):
+- `pytest tests/` → 56/56.
+- `alembic upgrade head --sql` chain clean: 0001 → 0002 → 0003 → 0004 → 0005, including the model_id update for the seedance route.
+- Routes register: `start-videos`, `scenes/{idx}/regenerate-video`.
+
+Critical contract decisions (don't re-debate):
+- **Seedance comes via fal.ai's queue, not direct Volcano Engine.** Same auth as image_gen (FAL_KEY). If we later move to a direct ByteDance integration, drop a `seedance_volc.py` next to `seedance_fal.py` and update the worker's `_build_provider` mapping. The `model_routes.provider='seedance'` value stays — admins don't care which transport we use under the hood.
+- **Provider-side polling, not webhooks.** Seedance jobs typically finish in 30-90s; a sync polling loop inside the RQ worker is simpler than persisting webhook callbacks. Webhook support deferred to CP-M8 if RQ worker latency becomes a problem.
+- **Image is presigned, NOT POSTed.** We give the provider a short-lived GET URL for the source image rather than uploading bytes. Cuts request size 100×.
+- **`asyncio.run` per RQ task** stays (matches analyzer + image_gen). Long polling is fine inside it because the worker process is single-job-at-a-time.
+- **`scene.duration` rounds UP for Seedance.** A 5.4s scene asks for 6s of motion so the compose stage has slack rather than gaps. ffmpeg compose will re-cut to the exact scene duration in CP-M5.
+- **Rollup rule unchanged**: any failed render fails the whole scenario. A single Seedance hiccup blocks the pipeline until admin retries that scene. Conservative but correct — if scene N fails, scenes N+1..N-1's videos are still useful for the eventual retry.
+
+What's deliberately stubbed:
+- Direct Volcano Engine ByteDance client — wait until fal.ai's markup is documented to be material. The interface is one file when needed.
+- Seed pinning for deterministic regenerates — `provider.generate(seed=...)` is wired but the API doesn't surface it. CP-M8.
+- Webhook-driven completion — CP-M8 if needed.
+- Audio + compose — CP-M5 picks up where video_gen leaves off.
 
 ## Open questions (still unresolved — flag if a milestone touches one)
 

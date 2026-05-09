@@ -29,3 +29,10 @@ class RegenerateImageRequest(BaseModel):
 
     aspect_ratio: Optional[str] = None  # default: regenerate ALL aspect groups for this scene
     prompt_override: Optional[str] = None
+
+
+class RegenerateVideoRequest(BaseModel):
+    """Body for `POST /scenarios/{id}/scenes/{idx}/regenerate-video`."""
+
+    aspect_ratio: Optional[str] = None  # default: regenerate ALL aspect groups for this scene
+    motion_override: Optional[str] = None

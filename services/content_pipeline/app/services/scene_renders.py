@@ -139,6 +139,23 @@ def mark_image_ready(session: Session, render: SceneRender, asset: MediaAsset) -
     return render
 
 
+def mark_generating_video(session: Session, render: SceneRender) -> SceneRender:
+    render.status = "generating_video"
+    render.error = None
+    session.add(render)
+    session.flush()
+    return render
+
+
+def mark_video_ready(session: Session, render: SceneRender, asset: MediaAsset) -> SceneRender:
+    render.video_asset_id = asset.id
+    render.status = "video_ready"
+    render.error = None
+    session.add(render)
+    session.flush()
+    return render
+
+
 def mark_failed(session: Session, render: SceneRender, error: str) -> SceneRender:
     render.status = "failed"
     render.error = error[:2000]
@@ -183,6 +200,33 @@ def recompute_scenario_status_from_renders(session: Session, scenario: Scenario)
 
 
 # ---------- regenerate-image ----------
+
+
+def claim_for_video_regenerate(
+    session: Session, scenario_id: uuid.UUID, scene_idx: int, aspect_ratio: str
+) -> SceneRender:
+    """Pre-flight for `POST /scenes/{idx}/regenerate-video`."""
+    render = get_for_scene(session, scenario_id, scene_idx, aspect_ratio)
+    if render.image_asset_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="scene_render has no image yet; generate / approve images first",
+        )
+    if render.status == "generating_video":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="scene_render is already generating_video; wait or fail it first",
+        )
+    return render
+
+
+def renders_with_video_pending(session: Session, scenario_id: uuid.UUID) -> List[SceneRender]:
+    """Renders that are `image_ready` and need an I2V job."""
+    return [
+        r
+        for r in list_for_scenario(session, scenario_id)
+        if r.status == "image_ready" and r.image_asset_id is not None
+    ]
 
 
 def claim_for_image_regenerate(

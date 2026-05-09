@@ -143,6 +143,12 @@ class Settings(BaseSettings):
     CP_ANALYZER_MAX_KEYFRAMES: int = Field(default=8)
     CP_ANALYZER_HTTP_TIMEOUT_SECONDS: float = Field(default=120.0)
 
+    # Video generation knobs (Seedance / Kling / Runway are async with polling)
+    CP_VIDEO_GEN_TIMEOUT_SECONDS: float = Field(
+        default=600.0,
+        description="Hard wall-clock cap on a single I2V job's polling loop.",
+    )
+
     @property
     def postgres_dsn(self) -> str:
         """Primary Postgres DSN (psycopg driver)."""

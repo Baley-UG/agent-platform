@@ -16,7 +16,7 @@ from sqlmodel import Session
 from app.api.v1.deps import get_project, get_session, require_api_key
 from app.models.projects import Project
 from app.schemas.scenarios import ScenarioCreate, ScenarioRead, ScenarioUpdate
-from app.schemas.scene_renders import RegenerateImageRequest, SceneRenderRead
+from app.schemas.scene_renders import RegenerateImageRequest, RegenerateVideoRequest, SceneRenderRead
 from app.services import queue
 from app.services import scenarios as svc
 from app.services import scene_renders as renders_svc
@@ -43,6 +43,16 @@ def _enqueue_image_gen(scene_render_id: uuid.UUID, prompt_override: Optional[str
     try:
         job = queue.enqueue(
             "image_gen", "app.workers.image_gen.run", str(scene_render_id), prompt_override
+        )
+        return job.id
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _enqueue_video_gen(scene_render_id: uuid.UUID, motion_override: Optional[str] = None) -> Optional[str]:
+    try:
+        job = queue.enqueue(
+            "video_gen", "app.workers.video_gen.run", str(scene_render_id), motion_override
         )
         return job.id
     except Exception:  # noqa: BLE001
@@ -205,5 +215,66 @@ def regenerate_scene_image(
     for aspect in aspects:
         render = renders_svc.claim_for_image_regenerate(session, scenario_id, scene_idx, aspect)
         _enqueue_image_gen(render.id, payload.prompt_override)
+        enqueued.append(render)
+    return [SceneRenderRead.model_validate(r) for r in enqueued]
+
+
+# ----- video generation -----
+
+
+@router.post("/{scenario_id}/start-videos", response_model=ScenarioRead)
+def start_videos(
+    scenario_id: uuid.UUID,
+    project: Project = Depends(get_project),
+    session: Session = Depends(get_session),
+) -> ScenarioRead:
+    """Transition `images_ready → generating_videos` and enqueue an I2V job
+    for every scene_render that has an image but no video yet."""
+    scenario = svc.start_video_generation(session, project.id, scenario_id)
+    pending = renders_svc.renders_with_video_pending(session, scenario.id)
+    for render in pending:
+        _enqueue_video_gen(render.id)
+    return ScenarioRead.model_validate(scenario)
+
+
+@router.post(
+    "/{scenario_id}/scenes/{scene_idx}/regenerate-video",
+    response_model=List[SceneRenderRead],
+)
+def regenerate_scene_video(
+    scenario_id: uuid.UUID,
+    scene_idx: int,
+    payload: RegenerateVideoRequest = RegenerateVideoRequest(),
+    project: Project = Depends(get_project),
+    session: Session = Depends(get_session),
+) -> List[SceneRenderRead]:
+    """Regenerate one scene's video. Without `aspect_ratio`, regenerates
+    ALL aspect-group masters for that scene; with one, just that variant.
+    Each run produces a fresh `media_assets` version; the prior video
+    asset chain stays for rollback.
+    """
+    scenario = svc.get(session, project.id, scenario_id)
+    if scenario.status not in ("videos_ready", "audio_ready", "generating_videos", "images_ready", "failed"):
+        from fastapi import HTTPException, status as http_status
+
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT,
+            detail=f"cannot regenerate video while scenario is in status={scenario.status}",
+        )
+
+    aspects = (
+        [payload.aspect_ratio] if payload.aspect_ratio else list(scenario.target_aspect_groups or [])
+    )
+    if not aspects:
+        from fastapi import HTTPException, status as http_status
+
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT, detail="scenario has no target_aspect_groups"
+        )
+
+    enqueued: List = []
+    for aspect in aspects:
+        render = renders_svc.claim_for_video_regenerate(session, scenario_id, scene_idx, aspect)
+        _enqueue_video_gen(render.id, payload.motion_override)
         enqueued.append(render)
     return [SceneRenderRead.model_validate(r) for r in enqueued]
