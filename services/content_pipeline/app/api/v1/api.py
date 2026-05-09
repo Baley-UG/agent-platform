@@ -5,7 +5,9 @@ from fastapi import APIRouter
 from app.api.v1 import (
     assets,
     brand_kits,
+    cost,
     intake_rules,
+    media_assets,
     model_routes,
     music,
     projects,
@@ -23,8 +25,10 @@ api_router.include_router(social_accounts.router)
 api_router.include_router(templates.router)
 api_router.include_router(music.router)
 api_router.include_router(assets.router)
+api_router.include_router(media_assets.router)
 api_router.include_router(references.router)
 api_router.include_router(intake_rules.router)
 api_router.include_router(scenarios.router)
+api_router.include_router(cost.router)
 api_router.include_router(model_routes.project_router)
 api_router.include_router(model_routes.global_router)

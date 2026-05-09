@@ -101,3 +101,47 @@ def replace(
 
 def get(session: Session, asset_id: uuid.UUID) -> Optional[MediaAsset]:
     return session.get(MediaAsset, asset_id)
+
+
+def walk_chain(session: Session, asset_id: uuid.UUID) -> list[MediaAsset]:
+    """Return the full version chain (oldest → newest) starting from any
+    asset in the chain.
+
+    We may be handed any version (the active one, a stale one mid-chain, or
+    even the v1 root). We walk back to v1 via `previous_version_id`, then
+    forward via `replaced_by_id`. Cycles are guarded by an id-set check —
+    a corrupted chain returns what we managed to walk before the cycle,
+    not an infinite loop.
+    """
+    seed = session.get(MediaAsset, asset_id)
+    if seed is None:
+        return []
+
+    # Walk back to the root (v1).
+    root = seed
+    seen = {root.id}
+    while root.previous_version_id is not None:
+        prior = session.get(MediaAsset, root.previous_version_id)
+        if prior is None or prior.id in seen:
+            break
+        seen.add(prior.id)
+        root = prior
+
+    # Walk forward to the active version.
+    chain: list[MediaAsset] = [root]
+    forward_seen = {root.id}
+    cursor = root
+    while cursor.replaced_by_id is not None:
+        nxt = session.get(MediaAsset, cursor.replaced_by_id)
+        if nxt is None or nxt.id in forward_seen:
+            break
+        forward_seen.add(nxt.id)
+        chain.append(nxt)
+        cursor = nxt
+    return chain
+
+
+def active_version(session: Session, asset_id: uuid.UUID) -> Optional[MediaAsset]:
+    """Resolve any chain member to the currently-active (replaced_by_id IS NULL) version."""
+    chain = walk_chain(session, asset_id)
+    return chain[-1] if chain else None

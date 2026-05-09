@@ -1,0 +1,25 @@
+# Never copy host venvs into the image — they overwrite the in-image
+# /app/.venv created by the Dockerfile and produce broken shebangs.
+.venv
+.venv.*
+venv
+
+# Caches
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.ruff_cache
+pytest-cache-files-*
+
+# Editor / OS
+.DS_Store
+.idea
+.vscode
+
+# Local dev only
+.env
+.env.local
+.env.*.local
+logs/
+*.log

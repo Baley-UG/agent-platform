@@ -321,6 +321,28 @@ The pipeline can now take a reference (scraped or uploaded) all the way to a fin
 - CP-M7: TikTok publisher + scraper bridge for TT, auto_generation_rules.
 - CP-M8: quality / dedup / curator / outpaint / Suno / etc.
 
+## CP-M5+ admin display gaps (post-M5 polish)
+
+Critical endpoints the admin panel needs to render the pipeline state. Same milestone as CP-M5 (no new tables, no migration), filed separately because they were called out only when the admin UI scope came up.
+
+What landed:
+- `GET /projects/{pid}/media-assets/{asset_id}` — full row (type, s3_key, size, dimensions, version, replaced_by_id, metadata).
+- `GET /projects/{pid}/media-assets/{asset_id}/preview-url?ttl=N` — short-lived **presigned GET** so the browser can `<img>`/`<video>` against private MinIO/Hetzner buckets. Without this, the panel had no way to show anything.
+- `GET /projects/{pid}/media-assets/{asset_id}/history` — full version chain (oldest → newest). Caller can pass any version id; `walk_chain` resolves the root via `previous_version_id` then walks forward via `replaced_by_id`. Cycle-guarded.
+- `GET /projects/{pid}/cost-summary?from=&to=` — aggregates `generation_calls` over a window (default last 30 days). Returns `total_cost_usd`, success/failed counts, breakdown by `task_key`, breakdown by `(provider, model_id)`, and `weekly_budget_remaining_usd` when `projects.weekly_budget_cap_usd` is set.
+- `GET /projects/{pid}/scenarios/{sid}/generation-calls` — drill-down list of every external API call we made for that scenario. Project scope enforced defensively at filter time.
+- `app/services/media_assets.py` — added `walk_chain(...)` and `active_version(...)`.
+- `app/services/cost.py` — `project_summary(...)`, `list_calls_for_scenario(...)`.
+- 8 new tests in `test_media_assets_chain.py` covering walk_chain semantics (root / middle / active / single / missing / cycle-bounded / active resolver).
+
+Tests: 80/80 green.
+
+Critical contract decisions:
+- **Preview URL TTL is admin-overridable per call** (`?ttl=N` between 60 and 86400 seconds), default from `S3_PRESIGNED_URL_TTL_SECONDS`. Lets the panel hand a short URL to a thumbnail and a longer URL to a full-screen preview without changing global config.
+- **Asset history is computed client-side from chain links**, not a separate audit table. The (`previous_version_id`, `replaced_by_id`) chain is the source of truth — a separate audit would drift.
+- **Cost summary's "weekly remaining" uses ISO week (Monday 00:00 UTC)**, matching the same anchor PLAN § 5 will use for scheduler cron jobs.
+- **Generation_calls list is per-scenario only** for now (no project-wide listing endpoint). Project-wide drill-down is the cost-summary's job; if admins want raw rows project-wide, CP-M8 can add a paginated listing.
+
 ## Open questions (still unresolved — flag if a milestone touches one)
 
 1. Default reference intake action (`auto_import` vs `queue_for_review`) — user said "I'll decide".
