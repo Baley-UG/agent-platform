@@ -4,6 +4,7 @@ Importing this package registers every table on `SQLModel.metadata` so
 Alembic autogenerate sees them.
 """
 
+from app.models.auto_generation_rules import PICK_STRATEGIES, AutoGenerationRule
 from app.models.brand_kits import BrandKit
 from app.models.content_references import ContentReference
 from app.models.generation_calls import GenerationCall
@@ -50,4 +51,6 @@ __all__ = [
     "CONTENT_TYPES",
     "PublishJob",
     "PUBLISH_JOB_STATUSES",
+    "AutoGenerationRule",
+    "PICK_STRATEGIES",
 ]

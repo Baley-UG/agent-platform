@@ -46,6 +46,7 @@ def test_metadata_registers_all_tables():
         "weekly_plans",
         "plan_slots",
         "publish_jobs",
+        "auto_generation_rules",
     }
     actual = {t.name for t in SQLModel.metadata.tables.values() if t.schema == "content_pipeline"}
     assert expected.issubset(actual), f"missing: {expected - actual}"
@@ -91,6 +92,7 @@ def test_app_routes_mounted():
         "/api/v1/projects/{project_id}/stock",
         "/api/v1/projects/{project_id}/calendar",
         "/api/v1/projects/{project_id}/plan-slots/{slot_id}/publish-now",
+        "/api/v1/projects/{project_id}/auto-generation-rules",
     }
     for prefix in expected_prefixes:
         assert any(p.startswith(prefix) for p in paths), f"no route starts with {prefix}"

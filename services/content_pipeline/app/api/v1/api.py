@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from app.api.v1 import (
     assets,
+    auto_generation,
     brand_kits,
     cost,
     intake_rules,
@@ -38,5 +39,6 @@ api_router.include_router(plans.plan_router)
 api_router.include_router(plans.slot_router)
 api_router.include_router(plans.stock_router)
 api_router.include_router(publish.router)
+api_router.include_router(auto_generation.router)
 api_router.include_router(model_routes.project_router)
 api_router.include_router(model_routes.global_router)

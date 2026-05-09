@@ -26,6 +26,7 @@ from app.services.providers.social.instagram import (
     InstagramPublishError,
     variant_to_ig_media_type,
 )
+from app.services.providers.social.tiktok import TikTokPublisher, TikTokPublishError
 
 
 def _build_publisher(provider: str, credentials: dict):
@@ -34,7 +35,11 @@ def _build_publisher(provider: str, credentials: dict):
             access_token=credentials.get("access_token", ""),
             ig_user_id=credentials.get("ig_user_id", ""),
         )
-    # CP-M7 will plug in tiktok here.
+    if provider == "tiktok":
+        return TikTokPublisher(
+            access_token=credentials.get("access_token", ""),
+            open_id=credentials.get("open_id"),
+        )
     raise NotImplementedError(f"social publisher not implemented yet: {provider}")
 
 
@@ -99,7 +104,7 @@ def run(plan_slot_id: str, force_now: bool = False) -> dict:  # noqa: ARG001
 
         try:
             publisher = _build_publisher(account.provider, creds)
-        except (InstagramPublishError, NotImplementedError) as exc:
+        except (InstagramPublishError, TikTokPublishError, NotImplementedError) as exc:
             svc.mark_failed(session, job, str(exc))
             slot.status = "failed"
             slot.last_error = str(exc)[:1000]
@@ -118,8 +123,15 @@ def run(plan_slot_id: str, force_now: bool = False) -> dict:  # noqa: ARG001
                 response = asyncio.run(
                     publisher.publish_video(
                         public_video_url=public_url,
-                        caption=(slot.last_error or "")[:0],  # placeholder; admin-supplied caption is CP-M6.5
+                        caption="",  # CP-M6.5 will source from plan_slots / scenarios
                         media_type=variant_to_ig_media_type(slot.variant_preset),
+                    )
+                )
+            elif account.provider == "tiktok":
+                response = asyncio.run(
+                    publisher.publish_video(
+                        public_video_url=public_url,
+                        title="",  # CP-M6.5 will source from plan_slots / scenarios
                     )
                 )
             else:
@@ -133,7 +145,13 @@ def run(plan_slot_id: str, force_now: bool = False) -> dict:  # noqa: ARG001
             session.flush()
             return {"ok": False, "error": str(exc)}
 
-        media_id = (response or {}).get("id")
+        # IG returns {"id": "..."}, TikTok returns {"publish_id": "...",
+        # "publicaly_available_post_id": "..."} (sic — TikTok's typo).
+        media_id = (
+            (response or {}).get("id")
+            or (response or {}).get("publicaly_available_post_id")
+            or (response or {}).get("publish_id")
+        )
         svc.mark_published(session, job, media_id=media_id, response=response or {})
         slot.status = "published"
         session.add(slot)

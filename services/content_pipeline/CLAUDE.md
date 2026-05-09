@@ -61,7 +61,7 @@ left off.
 | CP-M4 | Video generation | ✅ done | d235023 |
 | CP-M5 | Audio + compose (end of Phase 1) | ✅ done | 04895ec |
 | CP-M6 | Posting strategy + weekly plan + IG publish | ✅ done | 3423fe5 |
-| CP-M7 | TikTok + auto-generation | ⏳ not started | — |
+| CP-M7 | TikTok + auto-generation | ✅ done | _pending commit_ |
 | CP-M8 | Quality / enhancement | ⏳ not started | — |
 
 Status legend: ⏳ not started · 🔄 in progress · ✅ done · 🚧 blocked.
@@ -411,6 +411,43 @@ What's deliberately stubbed (CP-M6.5 / CP-M8 polish):
 - Multi-image carousel feed posts — single-asset only.
 - Webhook receiver from Meta for publish status updates — we poll inside the worker today.
 - TikTok publisher (CP-M7).
+
+## CP-M7 deliverables
+
+What landed in CP-M7:
+- 1 new table: `auto_generation_rules` (project-scoped) — `name`, `enabled`, `pick_strategy ∈ {highest_score, newest, diverse}`, `daily_quota`, `target_variants[]`, `quality_tier`, `budget_cap_usd`, `last_run_at`. Migration `0008_cp_m7_auto_generation`.
+- `app/services/providers/social/tiktok.py` — `TikTokPublisher` for the v2 Content Posting API. PULL_FROM_URL flow: `/post/publish/video/init/` → poll `/post/publish/status/fetch/` until `PUBLISH_COMPLETE` or `FAILED` (4s→30s backoff, 600s deadline). Returns `{publish_id, publicaly_available_post_id?, ...}`. Auth: `{access_token, open_id?}` in `social_accounts.credentials_encrypted`.
+- `app/workers/publish.py` — `_build_publisher` now switches on provider: `instagram` | `tiktok`. Publish call argument shape differs (IG: `caption + media_type`; TT: `title`). The media_id extractor falls back from `id` → `publicaly_available_post_id` → `publish_id`.
+- `app/services/budget.py` — `week_start_utc(now)` (ISO Monday 00:00 UTC), `day_start_utc(now)`, `weekly_spent`, `daily_spent`, `has_weekly_budget_remaining(project, headroom_usd)`, `has_rule_budget_remaining(project_id, rule_cap, headroom_usd)`. Used by the auto-gen loop and exposable to admin via `/cost-summary`.
+- `app/services/auto_generation.py` — `run_rule(rule, project)` runs all checks (enabled, daily_quota via `created_by="auto_gen:{rule_id}"` count, per-rule weekly budget, project weekly budget, candidate availability) then calls `scenarios_svc.create(...)` and bumps `last_run_at`. Pick strategies: `highest_score` (orders by `metadata.score`), `newest`, `diverse` (round-robin authors). `run_all_due()` walks all enabled rules across active projects.
+- `app/scheduler.py` — added `_auto_gen_loop` (hourly) running `run_all_due`. Now 6 concurrent loops in the scheduler.
+- API additions: `POST/GET/PATCH/DELETE /projects/{pid}/auto-generation-rules[/{rule_id}]`, `POST /{rule_id}/run-now` (bypass cron, returns spawned scenario id or a reason string when nothing eligible).
+- Tests (9 new, **119/119 green**):
+  - `test_tiktok_publisher.py` — empty-token rejection, valid construction, header shape with bearer auth.
+  - `test_budget.py` — `week_start_utc` Monday anchor, `day_start_utc` normalization, no-cap pass-through.
+  - Smoke covers the new table + the new auto-generation route prefix.
+
+What works now (verified end-to-end against the running stack):
+- `pytest tests/` → 119/119.
+- Migration 0008 applied cleanly via `alembic upgrade head`.
+- `POST /auto-generation-rules` creates a rule; `GET` lists it.
+- TikTok publisher constructs correctly; will run in prod once a TT social_account is provisioned with `{access_token, open_id}` credentials.
+
+Critical contract decisions (don't re-debate):
+- **TikTok publisher uses PULL_FROM_URL**, matching IG. `FILE_UPLOAD` (chunked) is implementable later but adds complexity; PULL_FROM_URL also keeps the public-URL contract identical (Hetzner public bucket OR 24h presigned GET).
+- **Auto-gen scenarios are tagged via `scenario.created_by="auto_gen:{rule_id}"`**. Daily quota counter reads this tag, not a separate audit table — keeps the schema tight. Manual scenarios use `created_by="api"` so they don't count.
+- **Auto-gen NEVER bypasses the reuse policy.** Rule fires `force=False`; if a project has `reuse_policy='warn'` and the candidate was used before, the create raises 409 and auto-gen logs a warning + skips. Admin's call to ack via the panel.
+- **Budget caps are weekly, not monthly.** Anchored to ISO Monday 00:00 UTC. Per-rule `budget_cap_usd` and project `weekly_budget_cap_usd` both checked; the more restrictive wins.
+- **Auto-gen loop spawns AT MOST one scenario per rule per hourly tick.** A rule with `daily_quota=3` fires three times across the day, not all at once. Even spread, low concurrency.
+- **`pick_strategy="highest_score"`** orders by `content_references.metadata_json.score` DESC — depends on ig_scraper having populated that field at import time. Falls back to `imported_at` for ties / missing scores.
+- **`pick_strategy="diverse"`** is best-effort author round-robin from a 20-row top window. Not a strict round-robin across all-time.
+
+What's deliberately stubbed (CP-M8 polish):
+- TikTok scraper bridge — separate ig_scraper milestone (not blocking the publisher).
+- Caption/title sourced from `plan_slots.caption_override` or `scenarios.default_caption` — CP-M6.5.
+- Provider-specific error parsing (TikTok's error codes, IG's specific failure reasons surfaced as user-friendly messages) — CP-M8.
+- Webhook receivers from Meta / TT for publish status — we still poll inside the worker.
+- Cross-platform reuse coordination — auto-gen doesn't yet know "this reference was used 3 days ago for IG, skip for TT this week."
 
 ## Open questions (still unresolved — flag if a milestone touches one)
 

@@ -650,13 +650,65 @@ how the data is shaped:
 
 ## 9. What's NOT exposed yet (don't build these flows)
 
-- TikTok publishing — provider stub returns `NotImplementedError` until CP-M7.
-- Auto-generation when stock runs out — only suggest path runs today (CP-M7).
 - Multi-image carousel feed posts — single asset only.
-- Webhook receivers for Meta — we poll inside the worker.
+- Webhook receivers for Meta / TikTok — we poll inside the worker.
 - Real-time WebSocket / SSE — polling only.
 - User-level auth — single static API key for now.
-- Per-slot caption / hashtag override — coming in CP-M6.5.
+- Per-slot caption / hashtag override — coming in CP-M6.5 (today the publisher
+  ships an empty caption / title).
+- TikTok scraper / `tt_videos` import-from-scraper — not in ig_scraper yet.
+
+## 9.5 Auto-generation rules (CP-M7)
+
+Proactive scenario generation independent of plan slots. Useful when admins
+want a steady drip of new content without manually picking references.
+
+```
+POST   /api/v1/projects/{pid}/auto-generation-rules
+       body: {name, enabled?, pick_strategy?, daily_quota?, target_variants?,
+              quality_tier?, budget_cap_usd?}
+GET    /api/v1/projects/{pid}/auto-generation-rules
+GET    /api/v1/projects/{pid}/auto-generation-rules/{rule_id}
+PATCH  /api/v1/projects/{pid}/auto-generation-rules/{rule_id}
+DELETE /api/v1/projects/{pid}/auto-generation-rules/{rule_id}
+POST   /api/v1/projects/{pid}/auto-generation-rules/{rule_id}/run-now
+```
+
+`pick_strategy ∈ {highest_score, newest, diverse}`. `daily_quota` caps how
+many scenarios this rule can create across 24h. `budget_cap_usd` is a
+**weekly** cap (ISO Monday 00:00 UTC); the project's
+`weekly_budget_cap_usd` also applies — the more restrictive wins.
+
+**`POST /run-now`** bypasses the hourly cron and tries to spawn one
+scenario immediately. Returns:
+
+```json
+{"rule_id": "...", "spawned_scenario_id": "...", "reason": null}
+```
+
+or, when nothing was eligible:
+
+```json
+{"rule_id": "...", "spawned_scenario_id": null,
+ "reason": "rule disabled, daily_quota reached, budget exhausted, or no candidate references"}
+```
+
+The hourly auto-gen loop in the scheduler walks every enabled rule across
+every active project; the rule's `last_run_at` lets the panel show "next
+run in X minutes" countdown.
+
+Auto-gen scenarios are tagged with `scenario.created_by="auto_gen:{rule_id}"`
+— useful for filtering on the scenarios list.
+
+## 9.6 TikTok publishing (CP-M7)
+
+`social_accounts` already supported `provider="tiktok"`. The publisher is now
+wired. Credentials shape: `{"access_token": "...", "open_id": "..."}`.
+
+The same `POST /plan-slots/{id}/publish-now` endpoint dispatches to TikTok
+when the slot's social_account has `provider="tiktok"`. Same polling cadence
+on `/publish-jobs`. Provider-specific media_id extraction returns TikTok's
+`publicaly_available_post_id` (yes — that's TikTok's typo, not ours).
 
 ---
 

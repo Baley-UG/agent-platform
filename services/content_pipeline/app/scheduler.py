@@ -30,6 +30,7 @@ from app.core.logging import logger
 from app.models.projects import Project
 from app.models.scenarios import Scenario
 from app.models.weekly_plans import WeeklyPlan
+from app.services import auto_generation as auto_gen_svc
 from app.services import queue
 from app.services import weekly_plans as plans_svc
 from app.services.database import session_scope
@@ -136,6 +137,28 @@ def _autogen_next_week(now: datetime) -> None:
                 logger.warning("weekly_autogen_project_failed", project=str(project.id), error=str(exc))
 
 
+async def _auto_gen_loop() -> None:
+    """Hourly — walk auto_generation_rules and spawn scenarios.
+
+    Each rule's daily_quota caps how many it can fire across 24h; this
+    loop runs once per hour so quota=24 fires hourly, quota=3 fires three
+    times across the day in the first three runs and then noop's.
+    """
+    while not _shutdown.is_set():
+        try:
+            with session_scope() as session:
+                spawned = auto_gen_svc.run_all_due(session)
+                if spawned:
+                    logger.info("auto_gen_loop_spawned", count=spawned)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("auto_gen_loop_error", error=str(exc))
+
+        try:
+            await asyncio.wait_for(_shutdown.wait(), timeout=3600)
+        except asyncio.TimeoutError:
+            continue
+
+
 async def _stale_alerter_loop() -> None:
     """Hourly — log scenarios stuck in `generating_*` / `composing` / `analyzing` for >2h."""
     while not _shutdown.is_set():
@@ -188,6 +211,7 @@ async def run() -> None:
         _publisher_poller_loop(),
         _plan_filler_loop(),
         _weekly_autogen_loop(),
+        _auto_gen_loop(),
         _stale_alerter_loop(),
     )
     logger.info("content_pipeline_scheduler_stopped")
