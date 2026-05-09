@@ -782,7 +782,124 @@ code change with no migration.
 
 ---
 
-## 11. Open Notes / Future Decisions
+## 11. Known Limitations & Future Solutions
+
+These are real production constraints surfaced during planning. None are blocking
+for CP-M1..CP-M5 (which target the simple "single layer, fully generated" path),
+but each has a concrete plan slot for when we hit it in a real campaign.
+
+### 11.1 Scene granularity is semantic, not time-uniform
+
+**Concern**: a 1.5s grid is too coarse for fast-cut hooks (0.3-0.8s flash cuts)
+and too fine for narrative beats that hold for 5-8s. A reference may also pivot
+locations sharply (home → mall) — that's a scene cut, not a single scene with a
+motion prompt that pretends to traverse them.
+
+**Status**: the analyzer already produces variable-length scenes (1.5-10s) and
+makes the cut decisions itself. The system prompt instructs it to choose scene
+boundaries by narrative beat, not by clock.
+
+**Future polish (CP-M3 or CP-M4)**:
+- Add a `scene.kind: 'master' | 'flash_cut' | 'beat_hold'` enum so the renderer
+  picks an appropriate transition style and disables I2V motion on flash cuts
+  (they look odd with parallax).
+- Allow sub-scenes / shot lists inside one scene when a single semantic beat
+  needs multiple shots (e.g. "morning routine" = pour coffee + open laptop + sit
+  down, all conceptually one scene). Schema: `scene.shots[]` with shared mood
+  + voiceover but distinct image/motion prompts.
+- Auto-detect when a reference's transcript implies hard location pivots and
+  enforce a cut, rather than letting the LLM blend them into one motion prompt.
+
+### 11.2 Multi-region compositions (split / PiP / overlay)
+
+**Concern**: many viral formats split the 9:16 frame:
+- Top/bottom split: gameplay on top, reaction on bottom; product demo on top,
+  caption text on bottom.
+- Picture-in-picture: presenter overlay on full-screen background.
+- Side-by-side compare: before/after, two product variants.
+
+A single `image_prompt` per scene assumes a single full-frame composition —
+inadequate for these.
+
+**Future schema (CP-M5+)**:
+```jsonc
+{
+  "scenes": [{
+    "idx": 0,
+    "duration": 6,
+    "composition": "split_vertical",      // 'single' | 'split_vertical' | 'split_horizontal' | 'pip' | 'three_panel'
+    "regions": [
+      {"slot": "top",    "image_prompt": "...", "motion_prompt": "...", "audio": "muted"},
+      {"slot": "bottom", "image_prompt": "...", "motion_prompt": "...", "audio": "primary"}
+    ],
+    // single-region scenes keep using the existing flat fields for backwards-compat
+  }]
+}
+```
+
+The compose stage adds a filter-complex layout per `composition` value (already
+straightforward in ffmpeg via `vstack` / `hstack` / `overlay`). Each region is
+a separate image_gen + video_gen job, so the existing fan-out logic extends
+cleanly.
+
+**When to build**: when an admin requests their first split-format project.
+Until then, single-region is enough and the schema stays simple.
+
+### 11.3 Non-generatable assets (UI screenshots, real product shots, custom logos)
+
+**Concern**: AI image models can't reliably reproduce:
+- Specific mobile app UI screenshots (the actual app being promoted)
+- Real product photography (a specific bottle, a specific label)
+- Brand-exact logo placements with legible micro-text
+- Charts / data visualizations with real numbers
+
+These need to be admin-supplied assets injected into the pipeline rather than
+generated.
+
+**Future schema (CP-M3 or CP-M4)**:
+- Reuse `media_assets` with new `type` values: `'ui_screenshot'`, `'product_photo'`,
+  `'data_viz'`, `'admin_supplied_clip'`.
+- Add a `scene_asset_slots` table or a `scene.asset_injections[]` array on the
+  scenario_json:
+  ```jsonc
+  {
+    "idx": 3,
+    "kind": "asset_injected",            // skip image_gen + video_gen entirely
+    "duration": 2.5,
+    "asset_ref": {
+      "media_asset_id": "...",
+      "treatment": "phone_mockup"        // 'fullscreen' | 'phone_mockup' | 'inline_overlay' | 'ken_burns'
+    },
+    "voiceover": "Tap install."
+  }
+  ```
+- For `treatment='phone_mockup'`: the renderer composites the screenshot inside
+  a stock phone frame template (which itself lives in `templates`), with optional
+  hand/finger overlay templates.
+- For `kind='mixed'`: image_gen still produces a background, but compose overlays
+  the admin asset on top using `asset_injections[].overlay_box` coordinates
+  (relative to the safe-zone-aware frame).
+
+**Admin UX hooks (separate panel work)**:
+- Drag-and-drop a screenshot onto a scene in the timeline → creates the
+  `media_assets` row and patches the scenario_json with an `asset_injections`
+  entry pointing at it.
+- "Phone mockup library": uploadable phone-frame PNG/MP4 templates with a
+  predefined inner-screen rectangle.
+
+**When to build**: as soon as the first project promotes an actual app —
+that's the canonical use case where this is unavoidable.
+
+### 11.4 Other deferred items (already noted elsewhere in this file)
+
+- Perceptual hash + caption embedding dedup across references — § 10 / CP-M8.
+- AI curator (LLM filter on top of intake rules) — CP-M8.
+- Outpaint-based 9:16 → 16:9 conversion — CP-M8.
+- Suno / Udio music generation — CP-M8.
+
+---
+
+## 12. Open Notes / Future Decisions
 
 - **Webhook vs polling** for Seedance: first version polls (simpler); webhook revisited in M14.
 - **`cost_estimates` updates**: first version is manual (env/seed); later, sync from provider invoice APIs.
