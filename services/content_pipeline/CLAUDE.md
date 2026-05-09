@@ -60,7 +60,7 @@ left off.
 | CP-M3 | Image generation + multi-aspect | ✅ done | aeb3750 |
 | CP-M4 | Video generation | ✅ done | d235023 |
 | CP-M5 | Audio + compose (end of Phase 1) | ✅ done | 04895ec |
-| CP-M6 | Posting strategy + weekly plan + IG publish | ✅ done | _pending commit_ |
+| CP-M6 | Posting strategy + weekly plan + IG publish | ✅ done | 3423fe5 |
 | CP-M7 | TikTok + auto-generation | ⏳ not started | — |
 | CP-M8 | Quality / enhancement | ⏳ not started | — |
 
