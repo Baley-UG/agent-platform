@@ -55,7 +55,7 @@ left off.
 
 | ID | Title | Status | Commit |
 | - | - | - | - |
-| CP-M1 | Skeleton, data model, storage, project CRUD | ✅ done | _pending commit_ |
+| CP-M1 | Skeleton, data model, storage, project CRUD | ✅ done | abfdac4 |
 | CP-M2 | References + intake + analyzer | ⏳ not started | — |
 | CP-M3 | Image generation + multi-aspect | ⏳ not started | — |
 | CP-M4 | Video generation | ⏳ not started | — |
