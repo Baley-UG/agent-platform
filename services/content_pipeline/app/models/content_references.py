@@ -55,6 +55,16 @@ class ContentReference(SQLModel, table=True):
 
     metadata_json: Optional[dict] = Field(default=None, sa_column=sa.Column("metadata", JSONB, nullable=True))
 
+    # CP-M8 — perceptual hash + caption embedding for dedup.
+    # Stored as bytea so the migration doesn't require pgvector. Distance
+    # for content_hash is byte-Hamming; embedding is reserved for future
+    # cosine similarity once pgvector lands.
+    content_hash: Optional[bytes] = Field(default=None, sa_column=sa.Column(sa.LargeBinary, nullable=True))
+    caption_embedding: Optional[bytes] = Field(default=None, sa_column=sa.Column(sa.LargeBinary, nullable=True))
+    # CP-M8 — AI curator output: 0-1 score with a one-line reason.
+    curator_score: Optional[float] = Field(default=None, sa_column=sa.Column(sa.Numeric(4, 3), nullable=True))
+    curator_reason: Optional[str] = Field(default=None, sa_column=sa.Column(sa.Text, nullable=True))
+
     # 'candidate' | 'approved' | 'archived'
     status: str = Field(default="candidate", sa_column=sa.Column(sa.String(32), nullable=False))
 

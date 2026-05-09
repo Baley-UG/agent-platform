@@ -24,6 +24,7 @@ from app.schemas.scenarios import ScenarioCreate, ScenarioRead, ScenarioUpdate
 from app.schemas.scene_renders import RegenerateImageRequest, RegenerateVideoRequest, SceneRenderRead
 from app.services import queue
 from app.services import render_variants as variants_svc
+from app.services import scenario_progress as progress_svc
 from app.services import scenarios as svc
 from app.services import scene_renders as renders_svc
 
@@ -447,3 +448,19 @@ def approve_final_scenario(
 ) -> ScenarioRead:
     """Mark the whole scenario as final-approved (ready for plan / publish)."""
     return ScenarioRead.model_validate(svc.approve_final(session, project.id, scenario_id))
+
+
+@router.get("/{scenario_id}/progress")
+def get_progress(
+    scenario_id: uuid.UUID,
+    project: Project = Depends(get_project),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Aggregate read for the admin panel.
+
+    One GET returns the scenario row, scene_renders grouped by scene_idx,
+    render_variants, voiceover summary, progress counters, and per-scenario
+    cost summary. Use this instead of polling four endpoints separately.
+    """
+    scenario = svc.get(session, project.id, scenario_id)
+    return progress_svc.build(session, scenario)

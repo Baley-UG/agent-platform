@@ -110,6 +110,14 @@ class PlanSlot(SQLModel, table=True):
     publish_job_id: Optional[uuid.UUID] = Field(
         default=None, sa_column=sa.Column(PGUUID(as_uuid=True), nullable=True)
     )
+
+    # CP-M6.5 — admin-supplied caption/hashtags for THIS slot, override the
+    # scenario.default_caption / default_hashtags.
+    caption_override: Optional[str] = Field(default=None, sa_column=sa.Column(sa.Text, nullable=True))
+    hashtags_override: Optional[List[str]] = Field(
+        default=None, sa_column=sa.Column(ARRAY(sa.Text), nullable=True)
+    )
+
     last_error: Optional[str] = Field(default=None, sa_column=sa.Column(sa.Text, nullable=True))
 
     created_at: datetime = Field(

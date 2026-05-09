@@ -405,11 +405,12 @@ that swaps `replaced_by_id` links. Flag it if you hit a real need.
 
 ### 5.4 Polling
 
-In-flight operations have no WebSocket / SSE today (CP-M8). Poll:
+In-flight operations have no WebSocket / SSE today (deferred). Poll:
 
 | Resource | Interval | Stop when |
 |---|---|---|
-| `scenario.status` | 2s | terminal: `pending_review`, `images_ready`, `videos_ready`, `audio_ready`, `final_pending_review`, `approved_final`, `failed` |
+| `GET /scenarios/{id}/progress` (recommended — single call) | 2s | scenario.status terminal |
+| `scenario.status` (drill-down only) | 2s | terminal: `pending_review`, `images_ready`, `videos_ready`, `audio_ready`, `final_pending_review`, `approved_final`, `failed` |
 | `scene-renders` (entire list) | 2s | every row in `image_ready` / `video_ready` / `failed` |
 | `render-variants` (entire list) | 3s | every row in `ready` / `approved` / `failed` |
 | `publish-jobs` for a slot | 5s | latest in `published` / `failed` |
@@ -418,6 +419,16 @@ In-flight operations have no WebSocket / SSE today (CP-M8). Poll:
 
 Use TanStack Query's `refetchInterval` with the stop condition. Don't
 poll if the tab is hidden (`document.visibilityState`).
+
+**Prefer `/progress`.** One GET returns:
+- the scenario row (status, version, target_variants, default_caption, ...)
+- scenes grouped by `scene_idx`, each with all aspect-group renders
+- render_variants with status + final_asset_id + thumbnail
+- voiceover summary (id, version, duration)
+- cost summary (`total_cost_usd`, `total_calls`, `success_calls`, `failed_calls`)
+- progress counters (`expected_renders`, `image_ready`, `video_ready`, `variants_ready`, `variants_total`)
+
+The detail page can render the entire pipeline state from this one call.
 
 ### 5.5 Reuse policy (creating scenarios)
 
@@ -700,7 +711,71 @@ run in X minutes" countdown.
 Auto-gen scenarios are tagged with `scenario.created_by="auto_gen:{rule_id}"`
 — useful for filtering on the scenarios list.
 
-## 9.6 TikTok publishing (CP-M7)
+## 9.6 Captions / hashtags (CP-M6.5)
+
+Two layers, slot-override wins:
+
+| Source | Field | Used when |
+|---|---|---|
+| `plan_slots.caption_override` + `hashtags_override` | per-slot | always wins |
+| `scenarios.default_caption` + `default_hashtags` | per-scenario fallback | when slot has no override |
+
+Both can be set via PATCH:
+
+```
+PATCH /api/v1/projects/{pid}/scenarios/{id}
+body: {default_caption: "🎬 morning routine", default_hashtags: ["routine", "lifestyle"]}
+
+PATCH /api/v1/projects/{pid}/plan-slots/{slot_id}
+body: {caption_override: "Customized for IG audience", hashtags_override: ["fyp"]}
+```
+
+The publisher resolves the final string at publish time (slot → scenario
+→ empty), prefixes hashtags with `#`, dedups, and joins with `\n\n`. For
+TikTok the resolved caption is truncated to 150 chars (TT's title limit).
+
+**Caption edits work in any scenario state.** Pipeline-shape edits
+(scenario_json, target_variants) are still gated to `draft`/`pending_review`.
+
+## 9.7 Reference dedup + AI curator (CP-M8 selective)
+
+Two endpoints surfaced for the inbox UX, infrastructure-only otherwise:
+
+```
+GET  /api/v1/projects/{pid}/references/{id}/dedup-check?max_distance=6
+POST /api/v1/projects/{pid}/references/{id}/curate
+```
+
+`dedup-check`:
+
+```json
+{
+  "reference_id": "...",
+  "has_hash": true,
+  "max_distance": 6,
+  "matches": [
+    {"id": "...", "distance": 3, "source_provider": "instagram", "imported_at": "...",
+     "caption": "morning ritual..."}
+  ]
+}
+```
+
+`has_hash: false` means the import pipeline hasn't computed a perceptual
+hash for this row yet (CP-M8.5 will populate hashes at import). The
+endpoint is wired so the panel can already implement the "duplicate of
+…" warning UI.
+
+`curate`:
+
+```json
+{"reference_id": "...", "curator_score": 0.78, "curator_reason": "Strong hook, on-brand."}
+```
+
+Returns `null` for both fields when no LLM route is configured (fail-open).
+Score is a 0-1 float; the panel can sort the inbox by it once admins
+have curated a few rows.
+
+## 9.8 TikTok publishing (CP-M7)
 
 `social_accounts` already supported `provider="tiktok"`. The publisher is now
 wired. Credentials shape: `{"access_token": "...", "open_id": "..."}`.

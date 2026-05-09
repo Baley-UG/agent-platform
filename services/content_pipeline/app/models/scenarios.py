@@ -100,6 +100,13 @@ class Scenario(SQLModel, table=True):
         default=None, sa_column=sa.Column(PGUUID(as_uuid=True), nullable=True)
     )
 
+    # CP-M6.5 — default caption + hashtags used as the publisher fallback
+    # when a plan_slot doesn't carry its own override.
+    default_caption: Optional[str] = Field(default=None, sa_column=sa.Column(sa.Text, nullable=True))
+    default_hashtags: Optional[List[str]] = Field(
+        default=None, sa_column=sa.Column(ARRAY(sa.Text), nullable=True)
+    )
+
     last_error: Optional[str] = Field(default=None, sa_column=sa.Column(sa.Text, nullable=True))
 
     created_by: Optional[str] = Field(default=None, sa_column=sa.Column(sa.String(64), nullable=True))

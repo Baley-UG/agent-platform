@@ -62,7 +62,8 @@ left off.
 | CP-M5 | Audio + compose (end of Phase 1) | ✅ done | 04895ec |
 | CP-M6 | Posting strategy + weekly plan + IG publish | ✅ done | 3423fe5 |
 | CP-M7 | TikTok + auto-generation | ✅ done | 1d9d820 |
-| CP-M8 | Quality / enhancement | ⏳ not started | — |
+| CP-M6.5 + CP-M8 (selective) | Captions, aggregate progress, dedup, curator | ✅ done | _pending commit_ |
+| CP-M8 (rest) | pgvector embeddings, webhooks, outpaint, Suno, etc. | ⏳ deferred | — |
 
 Status legend: ⏳ not started · 🔄 in progress · ✅ done · 🚧 blocked.
 
@@ -448,6 +449,51 @@ What's deliberately stubbed (CP-M8 polish):
 - Provider-specific error parsing (TikTok's error codes, IG's specific failure reasons surfaced as user-friendly messages) — CP-M8.
 - Webhook receivers from Meta / TT for publish status — we still poll inside the worker.
 - Cross-platform reuse coordination — auto-gen doesn't yet know "this reference was used 3 days ago for IG, skip for TT this week."
+
+## CP-M6.5 + CP-M8 (selective) deliverables
+
+What landed:
+- Migration `0009_cp_m8_polish` adds `scenarios.default_caption` + `default_hashtags`, `plan_slots.caption_override` + `hashtags_override`, `content_references.content_hash` + `caption_embedding` + `curator_score` + `curator_reason`. Hashes use bytea (pgvector deferred); admin can re-type to `vector(1536)` later without breaking the schema.
+- `app/services/captions.py` — `resolve(slot, scenario)` builds the publish-ready caption string using slot override → scenario default fallback. Hashtags are deduped, lowercase-normalized, prefixed with `#`, and joined with `\n\n` after the caption body.
+- `workers/publish.py` — pulls the resolved caption and hands it to IG (`caption=`) or TikTok (`title=`, truncated to 150 chars per platform limit).
+- `app/services/scenarios.py` — relaxed the `update` gate so caption/hashtag edits work in any state; pipeline-shape edits (scenario_json, target_variants, quality_tier) still gated to draft/pending_review.
+- `app/services/scenario_progress.py` — single-call aggregate read for the admin panel (scenario row + scenes grouped by idx + variants + voiceover summary + cost summary + progress counters). Replaces 4 polled endpoints with 1.
+- `app/services/dedup.py` — `hamming_distance(a, b)` + `find_near_duplicates(...)` (O(N) scan, suitable for project pools up to thousands of references; LSH for larger pools is a CP-M8.5 polish).
+- `app/services/curator.py` — async `curate(project, reference)` runs the LLM (via the project's `scenario_analysis` route), parses JSON `{score, reason}`, writes the score to the row and a `generation_calls` ledger entry. Fail-open: returns `(None, None)` when no LLM route is configured. JSON parser tolerates fenced/chatter prefix.
+- API additions:
+  - `GET /scenarios/{id}/progress` — aggregate panel read.
+  - `GET /references/{id}/dedup-check?max_distance=N` — top-10 near-duplicates by Hamming distance on `content_hash`. Returns `has_hash: false` when CP-M8.5 hash population hasn't run yet.
+  - `POST /references/{id}/curate` — synchronous curator run, returns the new score+reason.
+- Tests (18 new, **137/137 green**):
+  - `test_captions.py` — slot override wins, scenario fallback, empty-state, hashtag dedup, slot+scenario hashtag interplay, `_coerce_hashtags` whitespace handling.
+  - `test_dedup.py` — identical=0, single-bit=1, full-byte=8, unequal-length=-1, None=-1.
+  - `test_curator_parse.py` — plain JSON, score clamping (>1 → 1, <0 → 0), chatter prefix, garbage returns None, missing-score returns None.
+  - Smoke covers the 3 new routes.
+- ADMIN_API_GUIDE.md updated with the new endpoints + the `progress` polling pattern.
+
+What works now (verified end-to-end against the running stack):
+- `pytest tests/` → 137/137.
+- Migration 0009 applied via `alembic upgrade head`.
+- `GET /openapi.json` → 71 paths total.
+- Captions resolve from slot → scenario → empty correctly.
+
+Critical contract decisions (don't re-debate):
+- **Caption resolution is in `app/services/captions.py`, not on the model.** Tests hit the pure function directly. The publisher worker is the only caller today; CP-M8.5 admin "preview caption" endpoint would also call it.
+- **Caption / hashtag edits bypass the pipeline state machine gate.** Admins regularly tune copy AFTER images and audio are done; freezing copy at `approved` would force pointless regenerates.
+- **Aggregate progress endpoint is an explicit shortcut, not a replacement.** Individual `/scene-renders`, `/render-variants`, `/generation-calls` endpoints stay — they support filters and pagination; `/progress` is a snapshot. Both have their place.
+- **Dedup uses Hamming distance on `content_hash` (bytea), not pgvector cosine.** pgvector is reserved for the caption_embedding column for CP-M8.5 / CP-M9 when we add semantic dedup. Today's perceptual hash + bytewise distance is enough for "is this the same video, just re-uploaded?"
+- **Curator hits the same LLM route as the analyzer (`scenario_analysis`)** — admin doesn't have to set up a separate route. If admins want a cheaper model for curating, they add a project-scoped route with `task_key='curator'` and the curator service starts using it without a code change (currently it falls through to scenario_analysis).
+- **Curator is admin-triggered for now**, not auto-run on every import. CP-M8.5 will add a hourly loop that runs the curator across `inbox/candidates`. We have the service; the loop is one cron tick.
+- **`content_hash` population is CP-M8.5.** The schema column exists, the dedup endpoint is wired, but the import pipeline doesn't compute hashes yet. Reference dedup-check returns `has_hash: false` until the import path runs `imagehash.phash` on a representative video frame.
+
+What's deferred to later CP-M8/M9:
+- Pgvector cosine similarity for caption embeddings.
+- Auto-run curator + auto-archive low-score references on import.
+- Webhook receivers from Meta / TikTok for publish status (we still poll).
+- Suno / Udio music generation provider (today music is library-only).
+- Outpaint-based 9:16 → 16:9 cross-aspect rendering.
+- WebSocket / SSE replacement for the `/progress` polling.
+- User-level auth (single static API key for now).
 
 ## Open questions (still unresolved — flag if a milestone touches one)
 

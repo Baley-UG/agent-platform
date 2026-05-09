@@ -185,12 +185,17 @@ def update(
     session: Session, project_id: uuid.UUID, scenario_id: uuid.UUID, payload: ScenarioUpdate
 ) -> Scenario:
     row = get(session, project_id, scenario_id)
-    if row.status not in ("draft", "pending_review"):
+    data = payload.model_dump(exclude_unset=True)
+
+    # Caption / hashtag edits are allowed in any state — admins set them
+    # AFTER approval just before publishing. Pipeline-shape edits
+    # (scenario_json, target_variants, quality_tier) only in draft / pending_review.
+    pipeline_keys = {"scenario_json", "target_variants", "quality_tier"}
+    if any(k in data for k in pipeline_keys) and row.status not in ("draft", "pending_review"):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"scenario in status={row.status} cannot be edited; regenerate or fail it first",
+            detail=f"scenario in status={row.status} cannot have its pipeline shape edited; regenerate or fail it first",
         )
-    data = payload.model_dump(exclude_unset=True)
     if "scenario_json" in data and data["scenario_json"] is not None:
         row.scenario_json = data["scenario_json"]
     if "target_variants" in data and data["target_variants"] is not None:
@@ -198,6 +203,10 @@ def update(
         row.target_aspect_groups = _derive_aspect_groups(data["target_variants"])
     if "quality_tier" in data and data["quality_tier"] is not None:
         row.quality_tier = data["quality_tier"]
+    if "default_caption" in data:
+        row.default_caption = data["default_caption"]
+    if "default_hashtags" in data:
+        row.default_hashtags = list(data["default_hashtags"]) if data["default_hashtags"] is not None else None
     row.updated_at = datetime.now(timezone.utc)
     session.add(row)
     session.flush()

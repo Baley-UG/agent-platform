@@ -19,6 +19,8 @@ from app.models.media_assets import MediaAsset
 from app.models.plan_slots import PlanSlot
 from app.models.publish_jobs import PublishJob
 from app.models.render_variants import RenderVariant
+from app.models.scenarios import Scenario
+from app.services import captions as captions_svc
 from app.services import publishing as svc
 from app.services.database import session_scope
 from app.services.providers.social.instagram import (
@@ -118,12 +120,16 @@ def run(plan_slot_id: str, force_now: bool = False) -> dict:  # noqa: ARG001
 
         public_url = _public_url_for_asset(asset)
 
+        # CP-M6.5 — source caption from plan_slot.caption_override → scenario.default_caption.
+        scenario = session.get(Scenario, variant.scenario_id) if variant.scenario_id else None
+        caption_text = captions_svc.resolve(slot, scenario)
+
         try:
             if account.provider == "instagram":
                 response = asyncio.run(
                     publisher.publish_video(
                         public_video_url=public_url,
-                        caption="",  # CP-M6.5 will source from plan_slots / scenarios
+                        caption=caption_text,
                         media_type=variant_to_ig_media_type(slot.variant_preset),
                     )
                 )
@@ -131,7 +137,7 @@ def run(plan_slot_id: str, force_now: bool = False) -> dict:  # noqa: ARG001
                 response = asyncio.run(
                     publisher.publish_video(
                         public_video_url=public_url,
-                        title="",  # CP-M6.5 will source from plan_slots / scenarios
+                        title=caption_text[:150] if caption_text else "",
                     )
                 )
             else:

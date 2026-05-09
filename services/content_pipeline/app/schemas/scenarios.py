@@ -32,6 +32,8 @@ class ScenarioUpdate(BaseModel):
     target_variants: Optional[List[str]] = None
     quality_tier: Optional[QualityTier] = None
     notes: Optional[str] = None
+    default_caption: Optional[str] = None
+    default_hashtags: Optional[List[str]] = None
 
 
 class ScenarioRead(BaseModel):
@@ -45,6 +47,10 @@ class ScenarioRead(BaseModel):
     target_aspect_groups: Optional[List[str]]
     quality_tier: str
     generation_cost_usd: float
+    default_caption: Optional[str] = None
+    default_hashtags: Optional[List[str]] = None
+    voiceover_asset_id: Optional[uuid.UUID] = None
+    music_track_id: Optional[uuid.UUID] = None
     last_error: Optional[str]
     created_by: Optional[str]
     created_at: datetime

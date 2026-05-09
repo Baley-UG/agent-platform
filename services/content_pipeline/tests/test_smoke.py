@@ -93,6 +93,9 @@ def test_app_routes_mounted():
         "/api/v1/projects/{project_id}/calendar",
         "/api/v1/projects/{project_id}/plan-slots/{slot_id}/publish-now",
         "/api/v1/projects/{project_id}/auto-generation-rules",
+        "/api/v1/projects/{project_id}/scenarios/{scenario_id}/progress",
+        "/api/v1/projects/{project_id}/references/{reference_id}/dedup-check",
+        "/api/v1/projects/{project_id}/references/{reference_id}/curate",
     }
     for prefix in expected_prefixes:
         assert any(p.startswith(prefix) for p in paths), f"no route starts with {prefix}"

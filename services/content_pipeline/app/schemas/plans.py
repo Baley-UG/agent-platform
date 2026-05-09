@@ -46,6 +46,8 @@ class PlanSlotRead(BaseModel):
     status: str
     suggested_variant_ids: Optional[List[uuid.UUID]]
     publish_job_id: Optional[uuid.UUID]
+    caption_override: Optional[str] = None
+    hashtags_override: Optional[List[str]] = None
     last_error: Optional[str]
     created_at: datetime
     updated_at: datetime
@@ -70,6 +72,8 @@ class PlanSlotUpdate(BaseModel):
     status: Optional[SlotStatus] = None
     content_type: Optional[ContentType] = None
     variant_preset: Optional[str] = None
+    caption_override: Optional[str] = None
+    hashtags_override: Optional[List[str]] = None
 
 
 class AssignVariantRequest(BaseModel):

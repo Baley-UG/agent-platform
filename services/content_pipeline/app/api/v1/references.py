@@ -100,3 +100,66 @@ def usage_check(
     session: Session = Depends(get_session),
 ) -> UsageCheck:
     return svc.usage_check(session, project, reference_id)
+
+
+@router.get("/{reference_id}/dedup-check")
+def dedup_check(
+    reference_id: uuid.UUID,
+    max_distance: int = 6,
+    project: Project = Depends(get_project),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Find near-duplicates of THIS reference by perceptual hash.
+
+    Returns up to 10 references in the same project within Hamming
+    distance `max_distance` of this reference's `content_hash`. Empty
+    list when this row has no hash yet (CP-M8.5 will populate hashes
+    at import time).
+    """
+    from app.services import dedup as dedup_svc
+
+    ref = svc.get(session, project.id, reference_id)
+    if not ref.content_hash:
+        return {"reference_id": str(ref.id), "has_hash": False, "matches": []}
+    matches = dedup_svc.find_near_duplicates(
+        session, project.id, bytes(ref.content_hash), max_distance=max_distance, exclude_id=ref.id
+    )
+    return {
+        "reference_id": str(ref.id),
+        "has_hash": True,
+        "max_distance": max_distance,
+        "matches": [
+            {
+                "id": str(m.id),
+                "distance": dist,
+                "source_provider": m.source_provider,
+                "imported_at": m.imported_at.isoformat() if m.imported_at else None,
+                "caption": (m.caption or "")[:160],
+            }
+            for m, dist in matches
+        ],
+    }
+
+
+@router.post("/{reference_id}/curate")
+async def curate(
+    reference_id: uuid.UUID,
+    project: Project = Depends(get_project),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Run the AI curator over this reference.
+
+    Calls the LLM (via the project's `scenario_analysis` route, since the
+    curator is just an LLM-backed scoring task), writes
+    `curator_score` + `curator_reason` on the row, returns the new values.
+    Fail-open: returns `score=null` when no LLM route is configured.
+    """
+    from app.services import curator as curator_svc
+
+    ref = svc.get(session, project.id, reference_id)
+    score, reason = await curator_svc.curate(session, project, ref)
+    return {
+        "reference_id": str(ref.id),
+        "curator_score": float(score) if score is not None else None,
+        "curator_reason": reason,
+    }
