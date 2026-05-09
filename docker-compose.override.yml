@@ -1,0 +1,34 @@
+## Development overrides — automatically merged into docker-compose.yml.
+##
+## Volume-mounts the source code into the running containers so edits
+## reflect without rebuilding the image:
+##   - API: uvicorn `--reload` watches files and restarts in ~1s.
+##   - Worker / Scheduler: no built-in reload, but `docker compose
+##     restart ig-scraper-worker` picks up the new code instantly
+##     because /app/app is the mounted host directory.
+##
+## Trade-offs:
+##   - Production should NOT use this file (it disables image
+##     immutability and exposes host paths). Strip via:
+##       docker compose -f docker-compose.yml up -d   # explicit, no override
+##
+## When you DO need to rebuild:
+##   - Changed `services/ig_scraper/pyproject.toml`  → rebuild api/worker/scheduler.
+##   - Changed `services/ig_scraper/Dockerfile`      → rebuild api/worker/scheduler.
+##   - Pure Python edits under `services/ig_scraper/app/` → no rebuild needed.
+
+services:
+  ig-scraper-api:
+    volumes:
+      - ./services/ig_scraper/app:/app/app
+      - ./services/ig_scraper/alembic:/app/alembic
+      - ./services/ig_scraper/alembic.ini:/app/alembic.ini
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8081", "--reload", "--reload-dir", "/app/app"]
+
+  ig-scraper-worker:
+    volumes:
+      - ./services/ig_scraper/app:/app/app
+
+  ig-scraper-scheduler:
+    volumes:
+      - ./services/ig_scraper/app:/app/app

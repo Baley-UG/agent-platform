@@ -17,7 +17,13 @@ from sqlalchemy import text
 
 from app.core.config import settings
 from app.core.logging import logger
-from app.services import retention, scoring, targets as targets_service, webhooks as webhooks_service
+from app.services import (
+    jobs as jobs_service,
+    retention,
+    scoring,
+    targets as targets_service,
+    webhooks as webhooks_service,
+)
 from app.services.database import session_scope
 from app.services.heartbeat import beat, make_instance_id
 
@@ -123,6 +129,36 @@ async def _daily_loop(shutdown: asyncio.Event) -> None:
         except asyncio.TimeoutError:
             continue
     logger.info("scheduler_daily_loop_stopping")
+
+
+async def _reaper_loop(shutdown: asyncio.Event) -> None:
+    """Reap jobs whose worker died mid-process.
+
+    Runs every IG_REAPER_INTERVAL_SECONDS. Resets `status='running'`
+    rows whose `started_at` is older than IG_JOB_STUCK_AFTER_MINUTES
+    so another worker picks them up. Bounded by `max_attempts`, so a
+    job that genuinely can't be processed will hit terminal `failed`.
+    """
+    interval = settings.IG_REAPER_INTERVAL_SECONDS
+    minutes = settings.IG_JOB_STUCK_AFTER_MINUTES
+    logger.info(
+        "scheduler_reaper_loop_started",
+        interval=interval,
+        stuck_after_minutes=minutes,
+    )
+    # First pass at startup so a fresh scheduler cleans up after a
+    # crashed previous instance immediately.
+    while not shutdown.is_set():
+        try:
+            with session_scope() as session:
+                jobs_service.reap_stuck_jobs(session, older_than_minutes=minutes)
+        except Exception:  # noqa: BLE001
+            logger.exception("reaper_loop_failed")
+        try:
+            await asyncio.wait_for(shutdown.wait(), timeout=interval)
+        except asyncio.TimeoutError:
+            continue
+    logger.info("scheduler_reaper_loop_stopping")
 
 
 async def _webhook_dispatch_loop(shutdown: asyncio.Event) -> None:
@@ -245,6 +281,7 @@ async def main() -> None:
     tasks = [
         asyncio.create_task(_heartbeat_loop(shutdown), name="scheduler-heartbeat"),
         asyncio.create_task(_tick_loop(shutdown), name="scheduler-tick"),
+        asyncio.create_task(_reaper_loop(shutdown), name="scheduler-reaper"),
         asyncio.create_task(_daily_loop(shutdown), name="scheduler-daily"),
         asyncio.create_task(_webhook_dispatch_loop(shutdown), name="scheduler-webhooks"),
         asyncio.create_task(_canary_loop(shutdown), name="scheduler-canary"),

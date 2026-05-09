@@ -9,22 +9,65 @@ Architecture:
 - Graceful shutdown on SIGTERM / SIGINT — the main task sets a
   shutdown event; loops finish their current job before exiting.
 
+Cross-session ORM safety:
+- The worker pulls a `JobSnapshot` (plain dataclass) from the claim
+  step instead of carrying an ORM `ScrapeJob` across `session_scope`
+  boundaries. Detached-instance pitfalls disappear; every subsequent
+  session re-fetches by id when it needs the live row.
+
 Run with: `python -m app.worker`.
 """
 
 import asyncio
 import signal
+import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from app.core.config import settings
 from app.core.logging import logger
+from app.models.job import ScrapeJob
 from app.services import account_pool, jobs, scrapers, usage
 from app.services.database import session_scope
 from app.services.heartbeat import beat, make_instance_id
 
 PROCESS_NAME = "worker"
 INSTANCE_ID = make_instance_id()
+
+
+@dataclass
+class JobSnapshot:
+    """Plain-Python view of a claimed job.
+
+    Lives across `session_scope()` boundaries without DetachedInstance
+    drama. The handful of attributes the worker actually needs are
+    captured at claim time; everything else is re-fetched in-session.
+    """
+
+    id: uuid.UUID
+    job_type: str
+    target: str
+    params: Dict[str, Any]
+    min_likes: Optional[int]
+    min_impressions: Optional[int]
+    scan_target_id: Optional[uuid.UUID]
+    attempt: int
+    max_attempts: int
+
+    @classmethod
+    def from_orm(cls, job: ScrapeJob) -> "JobSnapshot":
+        return cls(
+            id=job.id,
+            job_type=job.job_type,
+            target=job.target,
+            params=dict(job.params or {}),
+            min_likes=job.min_likes,
+            min_impressions=job.min_impressions,
+            scan_target_id=job.scan_target_id,
+            attempt=job.attempt,
+            max_attempts=job.max_attempts,
+        )
 
 
 async def _heartbeat_loop(shutdown: asyncio.Event) -> None:
@@ -44,52 +87,96 @@ async def _heartbeat_loop(shutdown: asyncio.Event) -> None:
 async def _process_one_job(loop_id: int) -> bool:
     """Try to do one unit of work. Returns True if a job ran, False if
     the queue was empty or no account was available."""
-    # Claim a job. claim_next_job commits the running transition itself.
+    # Step 1 — claim. Capture a plain snapshot before the session closes.
     with session_scope() as session:
-        job = jobs.claim_next_job(session)
-    if job is None:
+        job_orm = jobs.claim_next_job(session)
+        snapshot = JobSnapshot.from_orm(job_orm) if job_orm is not None else None
+    if snapshot is None:
         return False
 
-    # Acquire an account for this job. If none available, push the job
-    # back to queued with a short backoff so a different worker /
-    # different time slot can pick it up.
+    job_id = snapshot.id
     acquired: Optional[account_pool.AcquiredAccount] = None
+    needs_account = scrapers.requires_account(snapshot.job_type)
+
     try:
-        with session_scope() as session:
-            try:
-                acquired = account_pool.acquire(session, job)
-            except account_pool.NoAccountAvailable as exc:
-                jobs.mark_retry(session, job.id, str(exc), backoff_seconds=120)
-                logger.info("worker_no_account", loop_id=loop_id, job_id=str(job.id))
-                return True
+        if needs_account:
+            # Step 2 (instagrapi path) — acquire account. account_pool.acquire
+            # reads `job.params` and `job.id`; we re-fetch the live ORM row
+            # in this session so the access path is fully session-attached.
+            with session_scope() as session:
+                job_for_acquire = session.get(ScrapeJob, job_id)
+                if job_for_acquire is None:
+                    logger.warning("worker_job_disappeared", job_id=str(job_id))
+                    return True
+                try:
+                    acquired = account_pool.acquire(session, job_for_acquire)
+                except account_pool.NoAccountAvailable as exc:
+                    jobs.mark_retry(session, job_id, str(exc), backoff_seconds=120)
+                    logger.info("worker_no_account", loop_id=loop_id, job_id=str(job_id))
+                    return True
 
-        # Bind account to the job so /jobs/{id} shows who's running it.
-        with session_scope() as session:
-            row = session.get(type(job), job.id)
-            if row is not None:
-                row.account_id = acquired.account.id
-                row.proxy_id = acquired.proxy.id if acquired.proxy else None
-                session.add(row)
-
-        result = await scrapers.dispatch(job, acquired.account, acquired.proxy)
-
-        # Persist outcome + usage + release account, all transactionally.
-        with session_scope() as session:
-            usage.increment(
-                session,
-                acquired.account.id,
-                calls=result.api_calls,
-                posts=result.posts_saved,
-                comments=result.comments_saved,
-                stories=result.stories_saved,
+            # Step 3 — bind account_id/proxy_id onto the row so the API
+            # surface shows who picked it up.
+            with session_scope() as session:
+                row = session.get(ScrapeJob, job_id)
+                if row is not None:
+                    row.account_id = acquired.account.id
+                    row.proxy_id = acquired.proxy.id if acquired.proxy else None
+                    session.add(row)
+        else:
+            # HikerAPI / SaaS path — provider handles auth, no account
+            # needed. We don't bind account_id; the row stays NULL on
+            # those columns to mark "external scrape source".
+            logger.info(
+                "worker_account_skipped",
+                loop_id=loop_id,
+                job_id=str(job_id),
+                job_type=snapshot.job_type,
+                reason="scraper marked requires_account=False",
             )
+
+        # Step 4 — run the scraper. Build a transient ORM instance from
+        # the snapshot so existing scraper code (which expects a
+        # ScrapeJob) keeps working without rewrites. This instance is
+        # detached and immutable from the scraper's POV — fine, scrapers
+        # only read.
+        scraper_job = ScrapeJob(
+            id=snapshot.id,
+            job_type=snapshot.job_type,
+            target=snapshot.target,
+            params=snapshot.params,
+            min_likes=snapshot.min_likes,
+            min_impressions=snapshot.min_impressions,
+            scan_target_id=snapshot.scan_target_id,
+            attempt=snapshot.attempt,
+            max_attempts=snapshot.max_attempts,
+            status="running",
+            scheduled_for=datetime.now(timezone.utc),
+        )
+
+        scraper_account = acquired.account if acquired else None
+        scraper_proxy = acquired.proxy if acquired else None
+        result = await scrapers.dispatch(scraper_job, scraper_account, scraper_proxy)
+
+        # Step 5 — persist outcome + usage + release account, all
+        # transactionally. Usage is per-account; if there's no account
+        # (HikerAPI path) we skip incrementing since `ig_usage_daily`
+        # is keyed on account_id.
+        with session_scope() as session:
+            if acquired is not None:
+                usage.increment(
+                    session,
+                    acquired.account.id,
+                    calls=result.api_calls,
+                    posts=result.posts_saved,
+                    comments=result.comments_saved,
+                    stories=result.stories_saved,
+                )
             if result.outcome == "success":
-                jobs.mark_succeeded(session, job.id, result.stats)
-                account_pool.release(session, acquired, "success")
-                # M9 — fire target_run_completed when the job belonged
-                # to a tracked target. Best-effort: never fail the job
-                # because of a webhook bookkeeping blip.
-                if job.scan_target_id is not None:
+                jobs.mark_succeeded(session, job_id, result.stats)
+                if acquired is not None:
+                    account_pool.release(session, acquired, "success")
+                if snapshot.scan_target_id is not None:
                     try:
                         from app.services import webhooks as webhooks_service
 
@@ -97,50 +184,54 @@ async def _process_one_job(loop_id: int) -> bool:
                             session,
                             event_type="target_run_completed",
                             payload={
-                                "target_id": str(job.scan_target_id),
-                                "job_id": str(job.id),
-                                "job_type": job.job_type,
-                                "target": job.target,
+                                "target_id": str(snapshot.scan_target_id),
+                                "job_id": str(job_id),
+                                "job_type": snapshot.job_type,
+                                "target": snapshot.target,
                                 "stats": result.stats,
                             },
                         )
                     except Exception:  # noqa: BLE001
                         logger.exception("worker_webhook_enqueue_failed")
             elif result.outcome in {"soft_fail", "rate_limited"}:
-                jobs.mark_retry(session, job.id, result.error or result.outcome)
-                account_pool.release(session, acquired, result.outcome, detail=result.error)
+                jobs.mark_retry(session, job_id, result.error or result.outcome)
+                if acquired is not None:
+                    account_pool.release(session, acquired, result.outcome, detail=result.error)
             elif result.outcome == "challenge":
-                jobs.mark_retry(session, job.id, result.error or "challenge required")
-                account_pool.release(session, acquired, "challenge", detail=result.error)
-                try:
-                    from app.services import webhooks as webhooks_service
+                jobs.mark_retry(session, job_id, result.error or "challenge required")
+                if acquired is not None:
+                    account_pool.release(session, acquired, "challenge", detail=result.error)
+                    try:
+                        from app.services import webhooks as webhooks_service
 
-                    webhooks_service.enqueue_delivery(
-                        session,
-                        event_type="account_challenge_required",
-                        payload={
-                            "account_id": str(acquired.account.id),
-                            "username": acquired.account.username,
-                            "job_id": str(job.id),
-                            "detail": result.error,
-                        },
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.exception("worker_webhook_enqueue_failed")
+                        webhooks_service.enqueue_delivery(
+                            session,
+                            event_type="account_challenge_required",
+                            payload={
+                                "account_id": str(acquired.account.id),
+                                "username": acquired.account.username,
+                                "job_id": str(job_id),
+                                "detail": result.error,
+                            },
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.exception("worker_webhook_enqueue_failed")
             elif result.outcome == "fatal":
-                jobs.mark_failed(session, job.id, result.error or "fatal")
-                account_pool.release(session, acquired, "fatal", detail=result.error)
+                jobs.mark_failed(session, job_id, result.error or "fatal")
+                if acquired is not None:
+                    account_pool.release(session, acquired, "fatal", detail=result.error)
             else:
-                jobs.mark_failed(session, job.id, f"unknown outcome {result.outcome}")
-                account_pool.release(session, acquired, "fatal")
+                jobs.mark_failed(session, job_id, f"unknown outcome {result.outcome}")
+                if acquired is not None:
+                    account_pool.release(session, acquired, "fatal")
 
         return True
 
     except Exception as exc:  # noqa: BLE001
         # Anything escaping the scraper / pool is a soft fail with retry.
-        logger.exception("worker_loop_exception", loop_id=loop_id, job_id=str(job.id))
+        logger.exception("worker_loop_exception", loop_id=loop_id, job_id=str(job_id))
         with session_scope() as session:
-            jobs.mark_retry(session, job.id, f"{type(exc).__name__}: {exc}")
+            jobs.mark_retry(session, job_id, f"{type(exc).__name__}: {exc}")
             if acquired is not None:
                 account_pool.release(session, acquired, "soft_fail", detail=str(exc))
         return True

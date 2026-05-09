@@ -12,6 +12,7 @@ from app.schemas.accounts import (
     AccountLoginResponse,
     AccountRead,
     AccountUpdate,
+    SessionImportRequest,
 )
 from app.services import accounts as accounts_service
 from app.services.database import session_scope
@@ -86,7 +87,7 @@ async def login_account(
     code = payload.verification_code if payload else None
     try:
         with session_scope() as session:
-            updated = await accounts_service.run_login(session, account_id, code)
+            updated, outcome = await accounts_service.run_login(session, account_id, code)
     except accounts_service.AccountNotFoundError:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="account not found")
 
@@ -95,5 +96,51 @@ async def login_account(
         status=updated.status,
         last_login_at=updated.last_login_at,
         has_session=updated.has_session,
-        detail="see logs for instagrapi-level error message" if updated.status != "active" else "ok",
+        detail=outcome.detail or ("ok" if updated.status == "active" else "login failed"),
+        ig_message=outcome.ig_message,
+        error_type=outcome.error_type,
+        exception_name=outcome.exception_name,
+    )
+
+
+@router.post("/{account_id}/import-session", response_model=AccountLoginResponse)
+async def import_session_endpoint(
+    account_id: uuid.UUID, payload: SessionImportRequest
+) -> AccountLoginResponse:
+    """Bypass username/password login by importing browser session cookies.
+
+    Useful when IG flags scraper logins from a fresh device fingerprint
+    even though the account is healthy. Steps:
+
+    1. Manually login to instagram.com in your browser.
+    2. F12 → Application → Cookies → https://www.instagram.com.
+    3. Copy the `sessionid` value.
+    4. POST it here. We feed it to instagrapi, run a probe, save the
+       resulting session if the probe passes.
+    """
+    if not payload.sessionid and not payload.cookies:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="Provide either `sessionid` or `cookies`.",
+        )
+    try:
+        with session_scope() as session:
+            updated, outcome = await accounts_service.import_session(
+                session,
+                account_id,
+                sessionid=payload.sessionid,
+                cookies=payload.cookies,
+            )
+    except accounts_service.AccountNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="account not found")
+
+    return AccountLoginResponse(
+        id=updated.id,
+        status=updated.status,
+        last_login_at=updated.last_login_at,
+        has_session=updated.has_session,
+        detail=outcome.detail or ("ok" if updated.status == "active" else "import failed"),
+        ig_message=outcome.ig_message,
+        error_type=outcome.error_type,
+        exception_name=outcome.exception_name,
     )

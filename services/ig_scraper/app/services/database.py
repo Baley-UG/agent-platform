@@ -43,8 +43,15 @@ read_engine = (
 
 @contextmanager
 def session_scope() -> Iterator[Session]:
-    """Provide a transactional scope around a series of operations."""
-    session = Session(engine)
+    """Provide a transactional scope around a series of operations.
+
+    `expire_on_commit=False` keeps ORM attributes valid after `commit()`
+    so a row claimed inside one scope can be read across subsequent
+    scopes without triggering DetachedInstanceError. Stale-read tradeoff:
+    after commit, attribute values reflect the in-memory state, not a
+    re-read from the DB. Caller must refresh explicitly when needed.
+    """
+    session = Session(engine, expire_on_commit=False)
     try:
         yield session
         session.commit()
@@ -58,7 +65,7 @@ def session_scope() -> Iterator[Session]:
 @contextmanager
 def read_session_scope() -> Iterator[Session]:
     """Read-only session pointing at the replica when configured."""
-    session = Session(read_engine)
+    session = Session(read_engine, expire_on_commit=False)
     try:
         yield session
     finally:

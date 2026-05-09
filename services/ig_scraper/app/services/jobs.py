@@ -214,6 +214,85 @@ def mark_failed(session: Session, job_id: uuid.UUID, error: str) -> None:
     logger.error("job_failed", job_id=str(job_id), error=job.error)
 
 
+def reap_stuck_jobs(session: Session, *, older_than_minutes: int) -> int:
+    """Recover jobs whose worker died mid-process.
+
+    A job stays in `status='running'` forever if its worker crashed
+    between claim and the success/fail update — the worker loop only
+    looks at `queued` rows. This reaper resets such rows so another
+    worker can pick them up.
+
+    Behaviour:
+    - `attempt < max_attempts` → status back to `queued`, account/proxy
+      bindings cleared, scheduled_for=now() so it fires immediately.
+    - `attempt >= max_attempts` → status='failed' with a clear error.
+
+    Returns the number of rows touched.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=older_than_minutes)
+    rows = session.execute(
+        text(
+            """
+            SELECT id, attempt, max_attempts FROM ig_scrape_jobs
+            WHERE status = 'running'
+              AND started_at IS NOT NULL
+              AND started_at <= :cutoff
+            FOR UPDATE SKIP LOCKED
+            """
+        ),
+        {"cutoff": cutoff},
+    ).all()
+
+    if not rows:
+        return 0
+
+    requeued = 0
+    failed = 0
+    now = datetime.now(timezone.utc)
+    for job_id, attempt, max_attempts in rows:
+        if attempt >= max_attempts:
+            session.execute(
+                text(
+                    """
+                    UPDATE ig_scrape_jobs
+                    SET status='failed',
+                        finished_at=:now,
+                        error='reaped: worker died, max_attempts exceeded'
+                    WHERE id=:id
+                    """
+                ),
+                {"now": now, "id": job_id},
+            )
+            failed += 1
+        else:
+            session.execute(
+                text(
+                    """
+                    UPDATE ig_scrape_jobs
+                    SET status='queued',
+                        started_at=NULL,
+                        account_id=NULL,
+                        proxy_id=NULL,
+                        scheduled_for=:now,
+                        error='reaped: worker died, requeued'
+                    WHERE id=:id
+                    """
+                ),
+                {"now": now, "id": job_id},
+            )
+            requeued += 1
+
+    session.commit()
+    if requeued or failed:
+        logger.warning(
+            "stuck_jobs_reaped",
+            requeued=requeued,
+            failed=failed,
+            cutoff_minutes=older_than_minutes,
+        )
+    return requeued + failed
+
+
 def mark_retry(
     session: Session,
     job_id: uuid.UUID,

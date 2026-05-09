@@ -25,24 +25,56 @@ class Environment(str, Enum):
 
 
 def _load_env_files() -> None:
-    """Load env files in priority order (service-local first, then repo root)."""
-    env_name = os.getenv("APP_ENV", "development").lower()
-    service_dir = Path(__file__).resolve().parents[2]
-    repo_root = service_dir.parents[1]
+    """Load env files in priority order (service-local first, then repo root).
 
-    candidates = [
-        service_dir / f".env.{env_name}.local",
-        service_dir / f".env.{env_name}",
-        service_dir / ".env.local",
-        service_dir / ".env",
-        repo_root / f".env.{env_name}.local",
-        repo_root / f".env.{env_name}",
-        repo_root / ".env.local",
-        repo_root / ".env",
-    ]
+    Two layouts exist:
+    - **Dev checkout**: `…/agent-platform/services/ig_scraper/app/core/config.py`
+      → `parents[2]` is the service dir, `parents[4]` is the repo root.
+    - **Container** (`/app/app/core/config.py`): `parents[2]` is `/app`,
+      no repo root available. docker-compose's `env_file:` directive
+      already injected env vars before this code runs, so missing
+      files here are fine.
+
+    Defensive: any path resolution that fails is swallowed — env vars
+    set by docker-compose / the host shell still take effect.
+    """
+    env_name = os.getenv("APP_ENV", "development").lower()
+    config_path = Path(__file__).resolve()
+    candidates: list[Path] = []
+
+    try:
+        service_dir = config_path.parents[2]
+        candidates.extend(
+            [
+                service_dir / f".env.{env_name}.local",
+                service_dir / f".env.{env_name}",
+                service_dir / ".env.local",
+                service_dir / ".env",
+            ]
+        )
+    except IndexError:
+        pass
+
+    try:
+        repo_root = config_path.parents[4]
+        candidates.extend(
+            [
+                repo_root / f".env.{env_name}.local",
+                repo_root / f".env.{env_name}",
+                repo_root / ".env.local",
+                repo_root / ".env",
+            ]
+        )
+    except IndexError:
+        # Container layout — no repo root to check; env_file already loaded.
+        pass
+
     for candidate in candidates:
-        if candidate.is_file():
-            load_dotenv(dotenv_path=candidate, override=False)
+        try:
+            if candidate.is_file():
+                load_dotenv(dotenv_path=candidate, override=False)
+        except OSError:
+            continue
 
 
 _load_env_files()
@@ -98,6 +130,14 @@ class Settings(BaseSettings):
     IG_SCHEDULER_TICK_SECONDS: int = Field(default=60)
     IG_HEARTBEAT_INTERVAL_SECONDS: int = Field(default=10)
     IG_HEARTBEAT_STALE_AFTER_SECONDS: int = Field(default=60)
+
+    # A job whose worker died mid-process stays stuck in `status='running'`
+    # forever (the worker only claims `queued` jobs). The reaper in the
+    # scheduler resets running jobs older than this threshold back to
+    # `queued`. Set higher than the longest real-world scrape — 60 min
+    # comfortably covers 2000-post backfills with throttling.
+    IG_JOB_STUCK_AFTER_MINUTES: int = Field(default=60)
+    IG_REAPER_INTERVAL_SECONDS: int = Field(default=60)
 
     # ----- Anti-detection / throttling (see plan § 5.3) -----
     # Per-action delay tiers (lognormal-clipped).
@@ -162,6 +202,23 @@ class Settings(BaseSettings):
     # ----- Canary (M10) -----
     IG_CANARY_TARGET: Optional[str] = Field(default=None, description="Username probed hourly with the canary account.")
     IG_CANARY_INTERVAL_HOURS: int = Field(default=1)
+
+    # ----- HikerAPI (third-party Instagram data provider) -----
+    # When USE_HIKERAPI=true, scrapers route through HikerAPI's REST
+    # service instead of instagrapi. The provider handles login,
+    # proxies, and IG anti-bot — we only call HTTP. See docs at
+    # https://hiker-doc.readthedocs.io
+    USE_HIKERAPI: bool = Field(default=False)
+    HIKERAPI_KEY: Optional[str] = Field(default=None, description="x-access-key header value.")
+    HIKERAPI_BASE_URL: str = Field(default="https://api.hikerapi.com")
+    HIKERAPI_TIMEOUT_SECONDS: float = Field(default=30.0)
+    HIKERAPI_MAX_RETRIES: int = Field(default=3)
+    HIKERAPI_PAGE_SIZE: int = Field(default=50)
+    # HikerAPI charges 2x when `privacy_check=true` (default) because
+    # they run an extra query to verify account visibility. We don't
+    # need that — our `is_private` field comes from the user payload
+    # itself. Default false to halve the billable request count.
+    HIKERAPI_PRIVACY_CHECK: bool = Field(default=False)
 
     # ----- Scoring (deterministic, Phase 1) -----
     IG_SCORE_HALFLIFE_DAYS: float = Field(default=14.0)

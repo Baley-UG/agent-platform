@@ -130,7 +130,9 @@ services:
       - APP_ENV=${APP_ENV:-development}
       - POSTGRES_HOST=${POSTGRES_HOST:-db}
     ports:
-      - "8081:8081"
+      # Host-side port overridable via IG_SCRAPER_HOST_PORT in .env
+      # so we can sidestep collisions without editing this file.
+      - "${IG_SCRAPER_HOST_PORT:-8081}:8081"
     depends_on:
       db:
         condition: service_healthy
@@ -149,7 +151,7 @@ services:
       context: ./services/ig_scraper
       args:
         APP_ENV: ${APP_ENV:-development}
-    command: ["/app/.venv/bin/python", "-m", "app.worker"]
+    command: ["python", "-m", "app.worker"]
     env_file:
       - .env
     environment:
@@ -167,7 +169,7 @@ services:
       context: ./services/ig_scraper
       args:
         APP_ENV: ${APP_ENV:-development}
-    command: ["/app/.venv/bin/python", "-m", "app.scheduler"]
+    command: ["python", "-m", "app.scheduler"]
     env_file:
       - .env
     environment:

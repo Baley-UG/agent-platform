@@ -8,6 +8,10 @@ Registration model: each real scraper module imports
 `register(job_type, fn)` and is imported eagerly from this `__init__`.
 That way the dispatch table is built at import time and the worker
 doesn't need to know about specific scrapers.
+
+`requires_account=False` is the escape hatch for scrapers that talk to
+external services (HikerAPI, Bright Data, Apify) that handle IG auth
+themselves. Worker skips `account_pool.acquire()` for these.
 """
 
 import asyncio
@@ -15,6 +19,7 @@ from dataclasses import dataclass, field
 from random import uniform
 from typing import Awaitable, Callable, Dict, Optional
 
+from app.core.config import settings
 from app.core.logging import logger
 from app.models.account import Account
 from app.models.job import ScrapeJob
@@ -41,14 +46,43 @@ class ScrapeResult:
     error: Optional[str] = None
 
 
-ScraperFn = Callable[[ScrapeJob, Account, Optional[Proxy]], Awaitable[ScrapeResult]]
-
-_REGISTRY: Dict[str, ScraperFn] = {}
+ScraperFn = Callable[[ScrapeJob, Optional[Account], Optional[Proxy]], Awaitable[ScrapeResult]]
 
 
-def register(job_type: str, fn: ScraperFn) -> None:
-    """Register a scraper for `job_type`. M4–M6 modules call this at import."""
-    _REGISTRY[job_type] = fn
+@dataclass
+class ScraperRegistration:
+    """Wraps the function with metadata the worker checks before dispatch."""
+
+    fn: ScraperFn
+    requires_account: bool = True
+
+
+_REGISTRY: Dict[str, ScraperRegistration] = {}
+
+
+def register(
+    job_type: str,
+    fn: ScraperFn,
+    *,
+    requires_account: bool = True,
+) -> None:
+    """Register a scraper for `job_type`.
+
+    `requires_account=False` skips account_pool.acquire — used by
+    HikerAPI / SaaS scrapers that handle IG auth on the provider side.
+    """
+    _REGISTRY[job_type] = ScraperRegistration(fn=fn, requires_account=requires_account)
+
+
+def get_registration(job_type: str) -> Optional[ScraperRegistration]:
+    """Worker uses this to decide whether to acquire an account."""
+    return _REGISTRY.get(job_type)
+
+
+def requires_account(job_type: str) -> bool:
+    """Default True so unknown / stub job_types still go through pool."""
+    reg = _REGISTRY.get(job_type)
+    return reg.requires_account if reg is not None else True
 
 
 async def _stub_scraper(
@@ -73,11 +107,13 @@ async def _stub_scraper(
 
 
 async def dispatch(
-    job: ScrapeJob, account: Account, proxy: Optional[Proxy]
+    job: ScrapeJob, account: Optional[Account], proxy: Optional[Proxy]
 ) -> ScrapeResult:
     """Route a job to its registered scraper, or fall back to the stub."""
-    fn = _REGISTRY.get(job.job_type, _stub_scraper)
-    return await fn(job, account, proxy)
+    reg = _REGISTRY.get(job.job_type)
+    if reg is None:
+        return await _stub_scraper(job, account, proxy)
+    return await reg.fn(job, account, proxy)
 
 
 # ----------------------------------------------------------------------
@@ -101,3 +137,12 @@ register("user_stories", run_user_stories)
 register("user_highlights", run_user_highlights)
 register("hashtag_top", run_hashtag_top)
 register("hashtag_recent", run_hashtag_recent)
+
+
+# HikerAPI overrides — opt-in via env. When enabled, replaces the
+# instagrapi-based scrapers above for every supported job_type.
+if settings.USE_HIKERAPI:
+    from app.services.scrapers.hikerapi import register_all as _register_hikerapi  # noqa: E402
+
+    _register_hikerapi()
+    logger.info("hikerapi_scrapers_registered", job_types=sorted(_REGISTRY.keys()))

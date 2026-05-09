@@ -17,7 +17,7 @@ from app.models.account import Account
 from app.models.proxy import Proxy
 from app.schemas.accounts import AccountCreate, AccountRead, AccountUpdate
 from app.services.crypto import encrypt
-from app.services.instagrapi_client import login_account
+from app.services.instagrapi_client import import_session_from_browser, login_account
 
 # Whitelisted enum-ish values; anything else is rejected at the service
 # boundary so we don't end up with garbage in the DB.
@@ -190,8 +190,12 @@ async def run_login(
     session: Session,
     account_id: uuid.UUID,
     verification_code: Optional[str],
-) -> AccountRead:
+):
     """Run the instagrapi login flow and persist the result.
+
+    Returns (AccountRead, LoginOutcome) so the API endpoint can surface
+    the structured outcome (detail / ig_message / error_type /
+    exception_name) directly to the caller — no more "see logs" hint.
 
     Updates `status`, `session_blob`, `last_login_at`, `failure_count`.
     Failure count is incremented on terminal failures and reset to 0 on
@@ -221,5 +225,50 @@ async def run_login(
         account_id=str(account.id),
         status=outcome.status,
         detail=outcome.detail,
+        ig_message=outcome.ig_message,
+        error_type=outcome.error_type,
+        exception_name=outcome.exception_name,
     )
-    return _to_read(account)
+    return _to_read(account), outcome
+
+
+async def import_session(
+    session: Session,
+    account_id: uuid.UUID,
+    *,
+    sessionid: Optional[str],
+    cookies: Optional[dict],
+):
+    """Import browser session cookies and verify with a feed probe.
+
+    Returns (AccountRead, LoginOutcome) like `run_login` so the API
+    response surface is identical.
+    """
+    account = _get_account_or_raise(session, account_id)
+    proxy: Optional[Proxy] = None
+    if account.proxy_id is not None:
+        proxy = session.get(Proxy, account.proxy_id)
+
+    outcome = await import_session_from_browser(
+        account, proxy, sessionid=sessionid, cookies=cookies
+    )
+
+    account.session_blob = outcome.session_blob
+    account.status = outcome.status
+    account.last_login_at = datetime.now(timezone.utc)
+    account.updated_at = account.last_login_at
+    if outcome.status == "active":
+        account.failure_count = 0
+    else:
+        account.failure_count = (account.failure_count or 0) + 1
+
+    session.add(account)
+    session.flush()
+
+    logger.info(
+        "account_session_imported",
+        account_id=str(account.id),
+        status=outcome.status,
+        detail=outcome.detail,
+    )
+    return _to_read(account), outcome

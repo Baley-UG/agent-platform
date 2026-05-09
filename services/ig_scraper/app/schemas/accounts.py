@@ -85,11 +85,46 @@ class AccountLoginRequest(BaseModel):
     )
 
 
+class SessionImportRequest(BaseModel):
+    """Body for POST /accounts/{id}/import-session.
+
+    Bypass IG's login challenge by reusing cookies from a real browser
+    where the user is already signed in. Provide either `sessionid`
+    alone (simplest) OR a full `cookies` dict (more robust).
+
+    How to extract from Chrome/Edge:
+      1. Login to instagram.com in a normal tab.
+      2. F12 → Application → Cookies → https://www.instagram.com
+      3. Copy `sessionid` (URL-decoded value).
+
+    The session is verified server-side with a `get_timeline_feed`
+    probe before we mark the account active.
+    """
+
+    sessionid: Optional[str] = Field(
+        default=None,
+        description="The `sessionid` cookie from a logged-in browser. URL-decoded.",
+    )
+    cookies: Optional[dict] = Field(
+        default=None,
+        description="Full cookie dict (sessionid, csrftoken, ds_user_id, mid, ig_did, rur, ...).",
+    )
+
+
 class AccountLoginResponse(BaseModel):
-    """Result of a login attempt — status drives next action."""
+    """Result of a login attempt — status drives next action.
+
+    `detail` is the operator-facing diagnostic (always set, includes IG's
+    verbatim message when login failed). `ig_message`, `error_type`, and
+    `exception_name` are the structured pieces of the same information,
+    handy for programmatic clients that don't want to parse `detail`.
+    """
 
     id: uuid.UUID
     status: str
     last_login_at: Optional[datetime]
     has_session: bool
-    detail: Optional[str] = Field(default=None, description="Human-readable note on the outcome.")
+    detail: Optional[str] = Field(default=None, description="Operator-facing summary including IG's verbatim message when available.")
+    ig_message: Optional[str] = Field(default=None, description="Verbatim `message` field from IG's error response.")
+    error_type: Optional[str] = Field(default=None, description="Machine-readable IG error code (e.g. 'bad_password').")
+    exception_name: Optional[str] = Field(default=None, description="instagrapi exception class name (e.g. 'BadPassword').")
