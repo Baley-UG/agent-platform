@@ -10,7 +10,10 @@ from app.models.generation_calls import GenerationCall
 from app.models.media_assets import MediaAsset
 from app.models.model_routes import ModelRoute
 from app.models.music import MusicTrack
+from app.models.plan_slots import CONTENT_TYPES, PLAN_SLOT_SOURCE_KINDS, PLAN_SLOT_STATUSES, PlanSlot
+from app.models.posting_strategy import PostingStrategy
 from app.models.projects import Project
+from app.models.publish_jobs import PUBLISH_JOB_STATUSES, PublishJob
 from app.models.reference_intake_rules import ReferenceIntakeRule
 from app.models.reference_usages import ReferenceUsage
 from app.models.render_variants import RENDER_VARIANT_STATUSES, RenderVariant
@@ -18,6 +21,7 @@ from app.models.scene_renders import SCENE_RENDER_STATUSES, SceneRender
 from app.models.scenarios import SCENARIO_STATUSES, Scenario
 from app.models.social_accounts import SocialAccount
 from app.models.templates import Template
+from app.models.weekly_plans import WEEKLY_PLAN_STATUSES, WeeklyPlan
 
 __all__ = [
     "Project",
@@ -37,4 +41,13 @@ __all__ = [
     "MediaAsset",
     "ModelRoute",
     "GenerationCall",
+    "PostingStrategy",
+    "WeeklyPlan",
+    "WEEKLY_PLAN_STATUSES",
+    "PlanSlot",
+    "PLAN_SLOT_STATUSES",
+    "PLAN_SLOT_SOURCE_KINDS",
+    "CONTENT_TYPES",
+    "PublishJob",
+    "PUBLISH_JOB_STATUSES",
 ]

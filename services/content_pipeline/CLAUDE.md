@@ -60,7 +60,7 @@ left off.
 | CP-M3 | Image generation + multi-aspect | ✅ done | aeb3750 |
 | CP-M4 | Video generation | ✅ done | d235023 |
 | CP-M5 | Audio + compose (end of Phase 1) | ✅ done | 04895ec |
-| CP-M6 | Posting strategy + weekly plan + IG publish | ⏳ not started | — |
+| CP-M6 | Posting strategy + weekly plan + IG publish | ✅ done | _pending commit_ |
 | CP-M7 | TikTok + auto-generation | ⏳ not started | — |
 | CP-M8 | Quality / enhancement | ⏳ not started | — |
 
@@ -342,6 +342,75 @@ Critical contract decisions:
 - **Asset history is computed client-side from chain links**, not a separate audit table. The (`previous_version_id`, `replaced_by_id`) chain is the source of truth — a separate audit would drift.
 - **Cost summary's "weekly remaining" uses ISO week (Monday 00:00 UTC)**, matching the same anchor PLAN § 5 will use for scheduler cron jobs.
 - **Generation_calls list is per-scenario only** for now (no project-wide listing endpoint). Project-wide drill-down is the cost-summary's job; if admins want raw rows project-wide, CP-M8 can add a paginated listing.
+
+## CP-M6 deliverables
+
+What landed in CP-M6:
+- 4 new tables in migration `0007_cp_m6_planning_publish`:
+  - `posting_strategy` (one row per project; lazy-created on first GET) — `timezone`, `weekly_quota` JSONB, `preferred_slots` JSONB, `min_gap_minutes`, `blackout`, `fill_strategy` (manual/auto_suggest/auto_fill, default `auto_suggest`), `auto_generate_if_empty` (off/suggest/auto, default `suggest`), `approval_required_before_publish`, `weekly_budget_cap_usd`.
+  - `weekly_plans` — one row per (project, Monday-of-week). UNIQUE(project_id, week_start_date). Status `draft|approved|active|archived`.
+  - `plan_slots` — one row per scheduled post. Holds `scheduled_at` (UTC), `social_account_id`, `content_type`, `variant_preset`, `source_kind`, `variant_id`, `reference_id`, `status`, `suggested_variant_ids[]`, `publish_job_id`, `last_error`. Partial index on `(scheduled_at, status) WHERE status IN ('ready','scheduled')` for the publisher poller.
+  - `publish_jobs` — one row per publish attempt. Holds `provider_container_id`, `provider_media_id`, `attempts`, `last_error`, `response` JSONB.
+- `app/services/posting_strategy.py` — `get_or_create` (lazy seed on first read with sensible IST defaults: 5 reels/14 stories/3 feed/7 tiktok per week, default `preferred_slots`, `auto_suggest` fill).
+- `app/services/planner.py` — pure-logic core:
+  - `parse_slot_expression("daily 19:00" | "Mon 12:00" | "Mon,Wed,Fri 19:00" | "weekdays 09:00" | "weekends 11:00")`. Unknown forms return `[]` so a single typo can't fail a whole week's generation.
+  - `expand_preferred_slots(strategy, week_start)` returns `[(scheduled_at_utc, preset, content_type)]` sorted by time, capped per-preset by `weekly_quota`.
+  - `is_in_blackout(...)` and `respect_min_gap(...)` for filter constraints.
+  - `stock_for_preset(...)` / `stock_for_project(...)` — view of `render_variants WHERE status='approved' AND id NOT IN (active plan_slots)`.
+  - `suggest_for_slot(...)` (top-3 stock candidates → `plan_slots.suggested_variant_ids`).
+  - `auto_fill_slot(...)` (FIFO over approved variants).
+  - `monday_of(date)` ISO-week anchor.
+- `app/services/weekly_plans.py` — orchestrator: `generate(project, week_start, fill=True)` is idempotent (re-running for the same week reuses the row and only inserts missing slots). `fill_empty_slots(plan, strategy)` applies the fill_strategy. Plan-slot CRUD + `due_slots(now)` queryset for the publisher poller.
+- `app/services/providers/social/instagram.py` — `InstagramPublisher` for the Graph API two-step flow (create container → poll until FINISHED → media_publish). 5s→30s polling backoff, 600s hard deadline. `variant_to_ig_media_type(...)` maps `ig_reels→REELS`, `ig_story→STORIES`, `ig_feed_*→VIDEO`. Refuses empty `access_token` / `ig_user_id`.
+- `app/services/publishing.py` — publish_jobs CRUD + state transitions (`create_pending`, `mark_uploading/processing/published/failed`). Decrypts `social_accounts.credentials_encrypted` only when handed off to the worker.
+- `app/workers/publish.py` — RQ task `app.workers.publish.run(plan_slot_id, force_now=False)`. Loads slot + variant + final_asset, picks `s3.public_url` if the bucket allows it, else a 24h presigned GET (so Meta can fetch through processing). Idempotent: if the slot already has a `published` job, it returns immediately.
+- `app/scheduler.py` — promoted to five concurrent loops:
+  - `_heartbeat_loop` (existing).
+  - `_publisher_poller_loop` (every 60s) — calls `due_slots`, enqueues each.
+  - `_plan_filler_loop` (hourly) — re-runs fill_strategy across draft/approved plans.
+  - `_weekly_autogen_loop` (Sundays 18:00 UTC) — for every active project, ensure next week's weekly_plan exists. In-memory date marker prevents double-runs across ticks.
+  - `_stale_alerter_loop` (hourly) — logs warnings for scenarios stuck in `generating_*` / `composing` / `analyzing` for >2h.
+- API additions:
+  - `GET /projects/{pid}/posting-strategy` (lazy create) and `PUT /...` for partial update.
+  - `POST /projects/{pid}/weekly-plans/generate` (body: `{week_start, fill}`) — idempotent.
+  - `GET /projects/{pid}/weekly-plans` and `GET /{plan_id}` and `GET /{plan_id}/slots`.
+  - `POST /weekly-plans/{plan_id}/approve` / `/refill`.
+  - `POST /projects/{pid}/plan-slots` create, `PATCH /{slot_id}` (drag-drop), `POST /{slot_id}/assign-variant`, `POST /{slot_id}/skip`, `DELETE`.
+  - `GET /projects/{pid}/stock?preset=...` — approved+unpinned variants.
+  - `GET /projects/{pid}/calendar?from=&to=` — slots in window.
+  - `POST /projects/{pid}/plan-slots/{slot_id}/publish-now` — bypass scheduler, enqueue immediately.
+  - `GET /projects/{pid}/plan-slots/{slot_id}/publish-jobs` — attempt history.
+- Tests (30 new, **110/110 green**):
+  - `test_planner.py` — slot expression parsing (daily / weekdays / csv / unknown days / bad time), expansion (quota cap / zero-quota skip / Istanbul→UTC offset / unknown timezone fallback / sorting / invalid-expression skipping), blackout (specific day / daily / outside window / malformed), min_gap (zero / blocking / passing), `monday_of` (Monday/Wed/Sun).
+  - `test_ig_publisher.py` — empty-token rejection, valid construction, variant→media_type mapping (reels / stories / feed fallback / unknown).
+  - Smoke test extended for the 4 new tables + 7 new route prefixes.
+
+What works now (verified end-to-end against the running stack):
+- `pytest tests/` → 110/110.
+- Migration 0007 applied cleanly via `alembic upgrade head` against the docker-compose Postgres.
+- `GET /projects/{pid}/posting-strategy` lazy-creates the row with IST defaults.
+- `POST /weekly-plans/generate` for week 2026-05-11 produces 28 slots with correct UTC times (IST 19:00 → UTC 16:00 for ig_reels, IST 20:00 → UTC 17:00 for tiktok, IST 09:00 → UTC 06:00 for stories, IST 13:00 → UTC 10:00).
+
+Critical contract decisions (don't re-debate):
+- **`posting_strategy` is one-row-per-project, lazy-created on first GET.** Avoids a separate "create strategy first" UX step. Default IST timezone matches the user's market.
+- **Times stored UTC, expressed in `posting_strategy.timezone`.** Slot expressions are local; `expand_preferred_slots` converts to UTC at materialization time. `from_/to` calendar queries take UTC datetimes.
+- **Skeleton generation is idempotent** — re-running `generate(week_start)` reuses the existing weekly_plan and only inserts missing slot tuples. New `preferred_slots` entries pop in on the next run.
+- **Variant fan-out uses `weekly_quota[preset]` as a hard cap.** Extra `preferred_slots` entries beyond the quota are dropped (declared-order FIFO). Admins who want more posts adjust the quota, not the slots list.
+- **`fill_strategy=auto_suggest` is the default** (PLAN § 5). Skeleton + 2-3 stock candidates per slot. Admin clicks one. `auto_fill` and `manual` available per project.
+- **Publisher poller picks slots only when** `scheduled_at <= now() AND status='ready' AND variant_id IS NOT NULL AND social_account_id IS NOT NULL`. Slots without bound variant/account silently wait — admin sees them in the calendar.
+- **IG public_url contract**: the renderer should land final_video on a publicly-fetchable URL (Hetzner public bucket). Dev (MinIO localhost) can't be reached by Meta — this is a prod-only flow today.
+- **Scheduler in-memory date markers** for weekly_autogen + stale_alerter are sufficient because the scheduler is single-replica. Multi-replica scheduler would need a DB lock — but PLAN explicitly limits the scheduler to one replica.
+- **`publish_jobs` is append-only-ish.** A failed job stays at `status='failed'`; a retry creates a new row (so the attempt history grows). The slot's `publish_job_id` always points at the LATEST attempt.
+- **Auth on social_accounts** — `credentials_encrypted` JSON expected to contain `{"access_token": "...", "ig_user_id": "..."}`. Other fields are ignored. CP-M7 will add `tt_open_id` / `tt_access_token` etc.
+
+What's deliberately stubbed (CP-M6.5 / CP-M8 polish):
+- Captions on plan_slots — the IG publisher passes an empty caption today. Add `plan_slots.caption_override` + `scenarios.default_caption` in CP-M6.5.
+- Auto-generation rules (CP-M2 schema deferred to CP-M7) — when stock runs out, no scenario is auto-spawned yet; only the suggest path runs.
+- Per-platform constraints validator — e.g. "tiktok max_duration ≤ 600s" is in `presets.py` but not enforced at slot-create time.
+- Hashtag generator — admin enters them manually for now via patch on plan_slots (CP-M6.5).
+- Multi-image carousel feed posts — single-asset only.
+- Webhook receiver from Meta for publish status updates — we poll inside the worker today.
+- TikTok publisher (CP-M7).
 
 ## Open questions (still unresolved — flag if a milestone touches one)
 

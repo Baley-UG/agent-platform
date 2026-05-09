@@ -42,6 +42,10 @@ def test_metadata_registers_all_tables():
         "reference_usages",
         "scene_renders",
         "render_variants",
+        "posting_strategy",
+        "weekly_plans",
+        "plan_slots",
+        "publish_jobs",
     }
     actual = {t.name for t in SQLModel.metadata.tables.values() if t.schema == "content_pipeline"}
     assert expected.issubset(actual), f"missing: {expected - actual}"
@@ -80,6 +84,13 @@ def test_app_routes_mounted():
         "/api/v1/projects/{project_id}/media-assets/{asset_id}/history",
         "/api/v1/projects/{project_id}/cost-summary",
         "/api/v1/projects/{project_id}/scenarios/{scenario_id}/generation-calls",
+        "/api/v1/projects/{project_id}/posting-strategy",
+        "/api/v1/projects/{project_id}/weekly-plans",
+        "/api/v1/projects/{project_id}/weekly-plans/generate",
+        "/api/v1/projects/{project_id}/plan-slots",
+        "/api/v1/projects/{project_id}/stock",
+        "/api/v1/projects/{project_id}/calendar",
+        "/api/v1/projects/{project_id}/plan-slots/{slot_id}/publish-now",
     }
     for prefix in expected_prefixes:
         assert any(p.startswith(prefix) for p in paths), f"no route starts with {prefix}"

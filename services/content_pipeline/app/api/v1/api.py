@@ -10,7 +10,10 @@ from app.api.v1 import (
     media_assets,
     model_routes,
     music,
+    plans,
+    posting_strategy,
     projects,
+    publish,
     references,
     scenarios,
     social_accounts,
@@ -30,5 +33,10 @@ api_router.include_router(references.router)
 api_router.include_router(intake_rules.router)
 api_router.include_router(scenarios.router)
 api_router.include_router(cost.router)
+api_router.include_router(posting_strategy.router)
+api_router.include_router(plans.plan_router)
+api_router.include_router(plans.slot_router)
+api_router.include_router(plans.stock_router)
+api_router.include_router(publish.router)
 api_router.include_router(model_routes.project_router)
 api_router.include_router(model_routes.global_router)
