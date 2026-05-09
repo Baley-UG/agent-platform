@@ -15,9 +15,15 @@ from sqlmodel import Session
 
 from app.api.v1.deps import get_project, get_session, require_api_key
 from app.models.projects import Project
+from app.schemas.render_variants import (
+    RegenerateVoiceoverRequest,
+    RenderVariantRead,
+    ReselectMusicRequest,
+)
 from app.schemas.scenarios import ScenarioCreate, ScenarioRead, ScenarioUpdate
 from app.schemas.scene_renders import RegenerateImageRequest, RegenerateVideoRequest, SceneRenderRead
 from app.services import queue
+from app.services import render_variants as variants_svc
 from app.services import scenarios as svc
 from app.services import scene_renders as renders_svc
 
@@ -54,6 +60,32 @@ def _enqueue_video_gen(scene_render_id: uuid.UUID, motion_override: Optional[str
         job = queue.enqueue(
             "video_gen", "app.workers.video_gen.run", str(scene_render_id), motion_override
         )
+        return job.id
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _enqueue_audio_gen(
+    scenario_id: uuid.UUID,
+    voice_id_override: Optional[str] = None,
+    text_override: Optional[str] = None,
+) -> Optional[str]:
+    try:
+        job = queue.enqueue(
+            "audio_gen",
+            "app.workers.audio_gen.run",
+            str(scenario_id),
+            voice_id_override,
+            text_override,
+        )
+        return job.id
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _enqueue_render(variant_id: uuid.UUID) -> Optional[str]:
+    try:
+        job = queue.enqueue("media_render", "app.workers.render.run", str(variant_id))
         return job.id
     except Exception:  # noqa: BLE001
         return None
@@ -278,3 +310,140 @@ def regenerate_scene_video(
         _enqueue_video_gen(render.id, payload.motion_override)
         enqueued.append(render)
     return [SceneRenderRead.model_validate(r) for r in enqueued]
+
+
+# ----- audio + compose -----
+
+
+@router.post("/{scenario_id}/start-audio", response_model=ScenarioRead)
+def start_audio(
+    scenario_id: uuid.UUID,
+    project: Project = Depends(get_project),
+    session: Session = Depends(get_session),
+) -> ScenarioRead:
+    """Transition videos_ready → generating_audio and enqueue the TTS job."""
+    scenario = svc.start_audio_generation(session, project.id, scenario_id)
+    _enqueue_audio_gen(scenario.id)
+    return ScenarioRead.model_validate(scenario)
+
+
+@router.post("/{scenario_id}/regenerate-voiceover", response_model=ScenarioRead)
+def regenerate_voiceover(
+    scenario_id: uuid.UUID,
+    payload: RegenerateVoiceoverRequest = RegenerateVoiceoverRequest(),
+    project: Project = Depends(get_project),
+    session: Session = Depends(get_session),
+) -> ScenarioRead:
+    """Re-run TTS. Versioned media_assets chain — prior voiceover stays for rollback."""
+    scenario = svc.start_audio_generation(session, project.id, scenario_id)
+    _enqueue_audio_gen(scenario.id, payload.voice_id_override, payload.text_override)
+    return ScenarioRead.model_validate(scenario)
+
+
+@router.post("/{scenario_id}/reselect-music", response_model=ScenarioRead)
+def reselect_music(
+    scenario_id: uuid.UUID,
+    payload: ReselectMusicRequest = ReselectMusicRequest(),
+    project: Project = Depends(get_project),
+    session: Session = Depends(get_session),
+) -> ScenarioRead:
+    """Set or auto-pick the scenario's music_track_id (no TTS re-run)."""
+    from app.models.music import MusicTrack
+    from app.services import audio as audio_svc
+
+    scenario = svc.get(session, project.id, scenario_id)
+    if payload.music_track_id is not None:
+        track = session.get(MusicTrack, payload.music_track_id)
+        if track is None or track.project_id != project.id:
+            from fastapi import HTTPException, status as http_status
+
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="music_track not found in this project",
+            )
+        scenario.music_track_id = track.id
+    else:
+        track = audio_svc.select_music_for_scenario(session, scenario)
+        scenario.music_track_id = track.id if track else None
+    session.add(scenario)
+    session.flush()
+    session.refresh(scenario)
+    return ScenarioRead.model_validate(scenario)
+
+
+@router.post("/{scenario_id}/start-compose", response_model=ScenarioRead)
+def start_compose(
+    scenario_id: uuid.UUID,
+    project: Project = Depends(get_project),
+    session: Session = Depends(get_session),
+) -> ScenarioRead:
+    """Materialize render_variants and enqueue compose jobs for each."""
+    scenario = svc.start_compose(session, project.id, scenario_id)
+    variants_svc.materialize_for_scenario(session, scenario)
+    for variant in variants_svc.list_for_scenario(session, scenario.id):
+        if variant.status in ("pending", "failed"):
+            variants_svc.mark_composing(session, variant)
+            _enqueue_render(variant.id)
+    return ScenarioRead.model_validate(scenario)
+
+
+@router.get("/{scenario_id}/render-variants", response_model=List[RenderVariantRead])
+def list_render_variants(
+    scenario_id: uuid.UUID,
+    project: Project = Depends(get_project),
+    session: Session = Depends(get_session),
+) -> List[RenderVariantRead]:
+    svc.get(session, project.id, scenario_id)  # auth scope
+    return [RenderVariantRead.model_validate(v) for v in variants_svc.list_for_scenario(session, scenario_id)]
+
+
+@router.post("/{scenario_id}/render-variants/{variant_id}/recompose", response_model=RenderVariantRead)
+def recompose_variant(
+    scenario_id: uuid.UUID,
+    variant_id: uuid.UUID,
+    project: Project = Depends(get_project),
+    session: Session = Depends(get_session),
+) -> RenderVariantRead:
+    """Re-run ffmpeg for a single variant. Scene videos / audio unchanged.
+
+    Cheap because no LLM / fal / Seedance / TTS spend — just CPU time.
+    """
+    svc.get(session, project.id, scenario_id)  # auth scope
+    variant = variants_svc.claim_for_recompose(session, variant_id)
+    if variant.scenario_id != scenario_id:
+        from fastapi import HTTPException, status as http_status
+
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND, detail="variant does not belong to that scenario"
+        )
+    variants_svc.mark_composing(session, variant)
+    _enqueue_render(variant.id)
+    return RenderVariantRead.model_validate(variant)
+
+
+@router.post("/{scenario_id}/render-variants/{variant_id}/approve", response_model=RenderVariantRead)
+def approve_variant(
+    scenario_id: uuid.UUID,
+    variant_id: uuid.UUID,
+    project: Project = Depends(get_project),
+    session: Session = Depends(get_session),
+) -> RenderVariantRead:
+    svc.get(session, project.id, scenario_id)  # auth scope
+    variant = variants_svc.get(session, variant_id)
+    if variant.scenario_id != scenario_id:
+        from fastapi import HTTPException, status as http_status
+
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND, detail="variant does not belong to that scenario"
+        )
+    return RenderVariantRead.model_validate(variants_svc.approve(session, variant))
+
+
+@router.post("/{scenario_id}/approve-final", response_model=ScenarioRead)
+def approve_final_scenario(
+    scenario_id: uuid.UUID,
+    project: Project = Depends(get_project),
+    session: Session = Depends(get_session),
+) -> ScenarioRead:
+    """Mark the whole scenario as final-approved (ready for plan / publish)."""
+    return ScenarioRead.model_validate(svc.approve_final(session, project.id, scenario_id))

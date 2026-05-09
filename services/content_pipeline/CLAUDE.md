@@ -59,7 +59,7 @@ left off.
 | CP-M2 | References + intake + analyzer | ✅ done | b7115d3 |
 | CP-M3 | Image generation + multi-aspect | ✅ done | aeb3750 |
 | CP-M4 | Video generation | ✅ done | d235023 |
-| CP-M5 | Audio + compose (end of Phase 1) | ⏳ not started | — |
+| CP-M5 | Audio + compose (end of Phase 1) | ✅ done | _pending commit_ |
 | CP-M6 | Posting strategy + weekly plan + IG publish | ⏳ not started | — |
 | CP-M7 | TikTok + auto-generation | ⏳ not started | — |
 | CP-M8 | Quality / enhancement | ⏳ not started | — |
@@ -263,6 +263,63 @@ What's deliberately stubbed:
 - Seed pinning for deterministic regenerates — `provider.generate(seed=...)` is wired but the API doesn't surface it. CP-M8.
 - Webhook-driven completion — CP-M8 if needed.
 - Audio + compose — CP-M5 picks up where video_gen leaves off.
+
+## CP-M5 deliverables (Phase 1 — closed)
+
+What landed in CP-M5:
+- New table `render_variants` (scenario_id, preset_key) with `final_asset_id`, `thumbnail_asset_id`, `render_recipe` JSONB, `duration_sec`, `file_size_bytes`, `error`, `approved_at`. UNIQUE(scenario_id, preset_key). Migration `0006_cp_m5_render_variants` also adds `scenarios.voiceover_asset_id` (FK media_assets) and `scenarios.music_track_id` (FK music_tracks) with `ON DELETE SET NULL`.
+- `app/services/providers/tts/base.py` — `TTSProvider` ABC + `TTSResponse`.
+- `app/services/providers/tts/elevenlabs.py` — `ElevenLabsProvider`. POST `/v1/text-to-speech/{voice_id}` with `{text, model_id, voice_settings, language_code?}`, returns binary mp3. Cost computed from `cost_per_unit_usd × len(text)` (ElevenLabs charges per character; we tag the unit as `input_token` by convention).
+- `app/services/audio.py` — `build_voiceover_script` concatenates `scene.voiceover` strings with periods; empty scenes contribute a `...` pause marker. `select_music_for_scenario` picks a music_track from the project library by mood overlap, falling back to newest. Returns `None` for empty libraries.
+- `app/services/scenarios.py` extensions — added `start_audio_generation`, `mark_audio_ready`, `start_compose`, `mark_final_pending_review`, `approve_final`. Updated `_ALLOWED_NEXT` to permit `videos_ready → generating_videos` (scene-video regenerate), `audio_ready → generating_audio` (voiceover regenerate), and `approved_final → composing` (full recompose after approval).
+- `app/services/render_variants.py` — `materialize_for_scenario` (idempotent fan-out across `scenario.target_variants`), `mark_composing/ready/failed/approve`, `recompute_scenario_status_from_variants` (any failed → scenario `failed`; all `ready`/`approved` → scenario `final_pending_review`), `claim_for_recompose`.
+- `app/workers/audio_gen.py` — RQ task `app.workers.audio_gen.run(scenario_id, voice_id_override?, text_override?)`. Resolves voice_id from brand_kit (project default → any project kit), runs ElevenLabs in `asyncio.run`, uploads to S3 (`projects/{pid}/audio/`), writes versioned `media_assets` of type `voiceover`, links `scenario.voiceover_asset_id`, **auto-picks a music track** if none chosen yet, transitions scenario to `audio_ready`, records `generation_calls`.
+- `app/services/renderer.py` — pure `build_compose_command(...)` returns ffmpeg argv as a list; `compose_variant(...)` orchestrates download → ffmpeg → upload using a tempdir. Baseline pipeline: concat-demuxer for scene videos, scale+pad to preset dimensions, voiceover + music mixed via `amix`, `loudnorm` to LUFS target, h264+aac+faststart. `FFmpegError` surfaces missing-binary cleanly. `write_concat_list` produces a properly-escaped concat file list.
+- `app/workers/render.py` — RQ task `app.workers.render.run(variant_id)`. Gathers scene video keys for the variant's aspect_group from `scene_renders`, picks voiceover + music keys from the scenario, calls `compose_variant`, writes versioned `media_assets` of type `final_video`, links `render_variant.final_asset_id`, records `generation_calls` with `provider='self_ffmpeg'` and `cost_usd=0`, rolls up scenario status.
+- API additions on the scenarios router:
+  - `POST /scenarios/{id}/start-audio` — videos_ready → generating_audio + enqueue audio_gen.
+  - `POST /scenarios/{id}/regenerate-voiceover` — same gate, accepts `{voice_id_override?, text_override?}`. New media_assets version.
+  - `POST /scenarios/{id}/reselect-music` — sets `scenario.music_track_id` (admin-supplied or auto-picked), no TTS re-run.
+  - `POST /scenarios/{id}/start-compose` — audio_ready → composing, materializes render_variants × `target_variants`, enqueues media_render for each.
+  - `GET /scenarios/{id}/render-variants` — admin grid view.
+  - `POST /scenarios/{id}/render-variants/{variant_id}/recompose` — re-run ffmpeg only (no LLM/fal/Seedance/TTS spend).
+  - `POST /scenarios/{id}/render-variants/{variant_id}/approve` — flip variant to approved.
+  - `POST /scenarios/{id}/approve-final` — final_pending_review → approved_final (scenario-level final approval).
+- Tests (16 new, **72/72 green**):
+  - `test_audio_helpers.py` — script concatenation w/ pause markers, music selection by mood overlap, fallback to newest, empty library, string-form mood block.
+  - `test_renderer_argv.py` — ffmpeg argv shape (-y, -hide_banner, concat demuxer, voiceover/music inputs, `amix` only when both present, `loudnorm` always, scale dims per preset, libx264 + aac + faststart, concat list writer escaping).
+  - Smoke test extended for the new table + 6 new routes.
+
+What works now (verified):
+- `pytest tests/` → 72/72.
+- `alembic upgrade head --sql` chain clean: 0001 → … → 0006. 14 tables emit.
+- All declared routes register on `app.routes`.
+
+Critical contract decisions (don't re-debate):
+- **Voiceover is ONE TTS call per scenario**, not per scene. Simpler S3 layout, simpler regenerate semantics. Scene-aligned timing markers + per-scene re-record land in CP-M5.5 if scene-level voiceover replay turns out to matter.
+- **Music selection runs inside the audio_gen worker**, not as a separate stage. Auto-pick is best-effort (mood overlap → newest → none). Admin can swap at any time via `/reselect-music` without re-running TTS.
+- **Compose has `provider='self_ffmpeg'` in `generation_calls` with `cost_usd=0`.** We still record latency + status so the cost-summary endpoint shows compose as a free row in the trace.
+- **`render_variants.render_recipe` is a snapshot of the ffmpeg decisions**, not a live config. Recompose with the same recipe should produce ~identical output (ffmpeg is mostly deterministic; libx264 isn't fully deterministic, but byte-equal isn't a goal).
+- **Renderer downloads inputs to a tempdir** rather than streaming from S3. ffmpeg's S3 support varies by build; local files are universally portable. Tempdir cleanup is `try/finally`.
+- **`build_compose_command` is pure**, separated from `compose_variant`. Tests assert argv shape without invoking ffmpeg — keeps CI fast and binary-independent.
+- **State machine permits `videos_ready → generating_videos`**, `audio_ready → generating_audio`, and `approved_final → composing` so admin regenerates don't require fail-then-restart. The existing fail-recovery path (any state → failed → draft/analyzing) is unchanged.
+- **Per-scene voiceover timing alignment is deferred.** Today the voiceover plays straight through the concatenated video; if the script is shorter than the video we pad with silence (`-shortest` ensures we don't extend video). If longer, ffmpeg trims.
+
+What's deliberately stubbed (CP-M5.5 / CP-M8 polish):
+- Per-scene xfade transitions — concat demuxer is a hard cut today.
+- Sidechain ducking under voiceover — `amix` mixes at fixed volumes for now.
+- On-screen text overlays at preset safe zones — not yet emitted.
+- Outro template insertion — `ComposeInputs.outro_video_key` exists but the arg builder ignores it.
+- Multi-region compositions (split / PiP) — captured in PLAN § 11.2.
+- Asset injection (app screenshots / phone mockups) — captured in PLAN § 11.3.
+- Thumbnail asset generation — `render_variants.thumbnail_asset_id` exists but the worker doesn't populate it; the admin panel uses the first scene's image as a fallback.
+
+## Phase 1 — closed.
+
+The pipeline can now take a reference (scraped or uploaded) all the way to a final composed video per platform. Next:
+- CP-M6: posting_strategy, weekly plans, plan_slots, IG Graph API publisher.
+- CP-M7: TikTok publisher + scraper bridge for TT, auto_generation_rules.
+- CP-M8: quality / dedup / curator / outpaint / Suno / etc.
 
 ## Open questions (still unresolved — flag if a milestone touches one)
 

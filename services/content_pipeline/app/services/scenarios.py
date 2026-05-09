@@ -57,12 +57,14 @@ _ALLOWED_NEXT = {
     "generating_images": {"images_ready", "failed"},
     "images_ready": {"generating_videos", "failed"},
     "generating_videos": {"videos_ready", "failed"},
-    "videos_ready": {"generating_audio", "failed"},
+    # videos_ready can also re-enter generating_videos for scene-video regenerate.
+    "videos_ready": {"generating_audio", "generating_videos", "failed"},
     "generating_audio": {"audio_ready", "failed"},
-    "audio_ready": {"composing", "failed"},
+    # audio_ready can re-enter generating_audio for voiceover regenerate.
+    "audio_ready": {"composing", "generating_audio", "failed"},
     "composing": {"final_pending_review", "failed"},
     "final_pending_review": {"approved_final", "composing", "failed"},
-    "approved_final": set(),
+    "approved_final": {"composing"},
     "failed": {"draft", "analyzing"},
 }
 
@@ -252,6 +254,59 @@ def start_video_generation(session: Session, project_id: uuid.UUID, scenario_id:
             detail=f"cannot start videos from status={row.status}; finish images_ready first",
         )
     transition(row, "generating_videos")
+    session.add(row)
+    session.flush()
+    session.refresh(row)
+    return row
+
+
+def start_audio_generation(session: Session, project_id: uuid.UUID, scenario_id: uuid.UUID) -> Scenario:
+    """Move from `videos_ready` (first run) or `audio_ready` (regenerate) to `generating_audio`."""
+    row = get(session, project_id, scenario_id)
+    if row.status not in ("videos_ready", "audio_ready"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"cannot start audio from status={row.status}; finish videos_ready first",
+        )
+    transition(row, "generating_audio")
+    session.add(row)
+    session.flush()
+    session.refresh(row)
+    return row
+
+
+def mark_audio_ready(session: Session, scenario: Scenario) -> Scenario:
+    transition(scenario, "audio_ready")
+    session.add(scenario)
+    session.flush()
+    return scenario
+
+
+def start_compose(session: Session, project_id: uuid.UUID, scenario_id: uuid.UUID) -> Scenario:
+    """Move from `audio_ready` (first run) / `final_pending_review` / `approved_final` (recompose) to `composing`."""
+    row = get(session, project_id, scenario_id)
+    if row.status not in ("audio_ready", "final_pending_review", "approved_final"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"cannot start compose from status={row.status}; reach audio_ready first",
+        )
+    transition(row, "composing")
+    session.add(row)
+    session.flush()
+    session.refresh(row)
+    return row
+
+
+def mark_final_pending_review(session: Session, scenario: Scenario) -> Scenario:
+    transition(scenario, "final_pending_review")
+    session.add(scenario)
+    session.flush()
+    return scenario
+
+
+def approve_final(session: Session, project_id: uuid.UUID, scenario_id: uuid.UUID) -> Scenario:
+    row = get(session, project_id, scenario_id)
+    transition(row, "approved_final")
     session.add(row)
     session.flush()
     session.refresh(row)

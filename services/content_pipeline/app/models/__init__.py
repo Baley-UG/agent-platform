@@ -13,6 +13,7 @@ from app.models.music import MusicTrack
 from app.models.projects import Project
 from app.models.reference_intake_rules import ReferenceIntakeRule
 from app.models.reference_usages import ReferenceUsage
+from app.models.render_variants import RENDER_VARIANT_STATUSES, RenderVariant
 from app.models.scene_renders import SCENE_RENDER_STATUSES, SceneRender
 from app.models.scenarios import SCENARIO_STATUSES, Scenario
 from app.models.social_accounts import SocialAccount
@@ -25,6 +26,8 @@ __all__ = [
     "ContentReference",
     "ReferenceIntakeRule",
     "ReferenceUsage",
+    "RenderVariant",
+    "RENDER_VARIANT_STATUSES",
     "Scenario",
     "SCENARIO_STATUSES",
     "SceneRender",

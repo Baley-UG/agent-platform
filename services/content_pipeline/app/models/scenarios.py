@@ -91,6 +91,15 @@ class Scenario(SQLModel, table=True):
         default=0.0, sa_column=sa.Column(sa.Numeric(12, 6), nullable=False, server_default="0")
     )
 
+    # CP-M5 — currently active voiceover (versioned via media_assets chain) and
+    # music selection (FK to a project's music_tracks library row).
+    voiceover_asset_id: Optional[uuid.UUID] = Field(
+        default=None, sa_column=sa.Column(PGUUID(as_uuid=True), nullable=True)
+    )
+    music_track_id: Optional[uuid.UUID] = Field(
+        default=None, sa_column=sa.Column(PGUUID(as_uuid=True), nullable=True)
+    )
+
     last_error: Optional[str] = Field(default=None, sa_column=sa.Column(sa.Text, nullable=True))
 
     created_by: Optional[str] = Field(default=None, sa_column=sa.Column(sa.String(64), nullable=True))
