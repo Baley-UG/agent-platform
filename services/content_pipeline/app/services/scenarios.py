@@ -204,6 +204,13 @@ def update(
 
 
 def approve(session: Session, project_id: uuid.UUID, scenario_id: uuid.UUID) -> Scenario:
+    """Approve `pending_review` → `approved`.
+
+    The image-generation fan-out (materializing `scene_renders` rows and
+    transitioning to `generating_images`) is a separate action driven by
+    `start_image_generation` so the admin can flip target_variants between
+    approve and image-gen if they change their mind on platform mix.
+    """
     row = get(session, project_id, scenario_id)
     if row.scenario_json is None:
         raise HTTPException(
@@ -211,6 +218,23 @@ def approve(session: Session, project_id: uuid.UUID, scenario_id: uuid.UUID) -> 
             detail="scenario_json is empty — run the analyzer or fill it manually before approving",
         )
     transition(row, "approved")
+    session.add(row)
+    session.flush()
+    session.refresh(row)
+    return row
+
+
+def start_image_generation(session: Session, project_id: uuid.UUID, scenario_id: uuid.UUID) -> Scenario:
+    """Move from `approved` to `generating_images`. Caller must materialize
+    scene_renders + enqueue image_gen jobs (see `scene_renders` service).
+    """
+    row = get(session, project_id, scenario_id)
+    if row.status != "approved":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"cannot start images from status={row.status}; approve the scenario first",
+        )
+    transition(row, "generating_images")
     session.add(row)
     session.flush()
     session.refresh(row)

@@ -57,7 +57,7 @@ left off.
 | - | - | - | - |
 | CP-M1 | Skeleton, data model, storage, project CRUD | ✅ done | abfdac4 |
 | CP-M2 | References + intake + analyzer | ✅ done | b7115d3 |
-| CP-M3 | Image generation + multi-aspect | ⏳ not started | — |
+| CP-M3 | Image generation + multi-aspect | ✅ done | _pending commit_ |
 | CP-M4 | Video generation | ⏳ not started | — |
 | CP-M5 | Audio + compose (end of Phase 1) | ⏳ not started | — |
 | CP-M6 | Posting strategy + weekly plan + IG publish | ⏳ not started | — |
@@ -185,6 +185,48 @@ What's deliberately stubbed:
 - Reference media auto-mirror to S3 on import-from-scraper — caller can fetch lazily; CP-M3 image generator never needs the original anyway.
 - Concrete providers for `fal`, `seedance`, `elevenlabs` — CP-M3..CP-M5.
 - `scene_renders`, `render_variants`, `media_assets` writes — CP-M3.
+
+## CP-M3 deliverables
+
+What landed in CP-M3:
+- New table `scene_renders` (scenario_id, scene_idx, aspect_ratio, image_asset_id, video_asset_id, status, error). UNIQUE(scenario_id, scene_idx, aspect_ratio). Migration `0004_cp_m3_scene_renders`.
+- `app/services/presets.py` — single source of truth for platform specs: `PRESETS` (ig_reels, tiktok, ig_story, ig_feed_45, ig_feed_11, yt_shorts) with safe_zones + max_duration + LUFS, `ASPECT_DIMENSIONS` (9:16 → 1080×1920, 4:5 → 1080×1350, 1:1 → 1080×1080, 16:9 → 1920×1080), `VARIANT_ASPECT_GROUP` reverse map. Lives in code, not DB.
+- `app/services/providers/image/base.py` — `ImageProvider` ABC + `ImageResponse` dataclass.
+- `app/services/providers/image/fal.py` — `FalImageProvider`. Uses fal.ai's sync `/run` endpoint at `https://fal.run/<model_id>`, maps canonical aspects to fal preset names (`portrait_16_9`, `square`, `portrait_4_3`, `landscape_16_9`) with explicit width/height fallback, fetches the image bytes from fal's CDN before returning so the caller can upload directly to our S3.
+- `app/services/media_assets.py` — versioned-chain helpers. `create_initial(...)` for v1, `replace(prior, ...)` for v2+ that bumps `prior.replaced_by_id`, inserts a new row with `version = prior.version + 1` and `previous_version_id = prior.id`. Rollback = swap `replaced_by_id` links; never delete.
+- `app/services/scene_renders.py` — `materialize_for_scenario` (idempotent fan-out across scenes × aspect_groups), `mark_image_ready/failed`, `recompute_scenario_status_from_renders` (rolls scene_render statuses up into the parent scenario: any failed → scenario failed, all `image_ready` → scenario `images_ready`).
+- `app/workers/image_gen.py` — RQ task `app.workers.image_gen.run(scene_render_id, prompt_override=None)`. Resolves `scene_image` route via model_router, picks dimensions from `presets.ASPECT_DIMENSIONS`, runs the async fal call inside `asyncio.run`, uploads bytes to S3 (`projects/{pid}/scenes/...`), writes versioned `media_assets`, links `scene_render.image_asset_id`, records `generation_calls` (with `image_count=1` and `cost_usd` from route pricing), rolls up scenario status.
+- `app/services/scenarios.py` — added `start_image_generation(...)` that gates `approved → generating_images`. `approve` stays focused on the analyzer→approved transition only, so admins can flip target_variants between approve and image-gen.
+- API additions on the scenarios router:
+  - `POST /scenarios/{id}/start-images` — kicks the whole fan-out: transitions the scenario, materializes `scene_renders` for every (scene, aspect_group), enqueues an image_gen job per pending render.
+  - `GET /scenarios/{id}/scene-renders` — list scenes with their per-aspect status (admin grid view).
+  - `POST /scenarios/{id}/scenes/{idx}/regenerate-image` — body accepts `{aspect_ratio?, prompt_override?}`. Without `aspect_ratio`, regenerates ALL aspect-group masters for that scene; with one, regenerates just that variant. Each run produces a fresh `media_assets` version; the prior asset stays intact for rollback.
+- Tests (15 new, **48/48 green**):
+  - `test_presets.py` — every variant has dimensions, 9:16 family shares master, canonical resolutions pinned.
+  - `test_fal_size_mapping.py` — fal preset string for canonical sizes, fallback for non-canonical.
+  - `test_scene_renders_logic.py` — fan-out math handles missing scenario_json / empty scenes / null aspect_groups.
+  - Smoke test extended for the new table + 3 new routes.
+
+What works now (verified):
+- `pytest tests/` → 48/48.
+- `alembic upgrade head --sql` emits all 13 tables (12 from CP-M1+M2 plus `scene_renders`).
+- Routes register: `start-images`, `scene-renders`, `regenerate-image`.
+
+Critical contract decisions (don't re-debate):
+- **Approve and image-gen are TWO endpoints, not one.** `POST /approve` only flips status to `approved`. `POST /start-images` is the image-money-spending step. This matches CP-M2's analyzer auto-enqueue pattern (cheap → automatic) vs the more expensive image fan-out (deliberate).
+- **Scene masters are per aspect_group, not per variant.** `ig_reels` and `tiktok` both consume the 9:16 master; only `ig_feed_45` would trigger a separate 4:5 image_gen run. Variants diverge at compose-time (CP-M5), not at image-gen.
+- **Fan-out width comes from `scenario.target_aspect_groups`** (precomputed at scenario create from `target_variants`). The image_gen worker never re-derives — it just reads `scene_render.aspect_ratio`.
+- **fal.ai image bytes get fetched server-side, NOT URL-passed downstream.** fal's CDN URL has a finite TTL; we mirror to our S3 immediately so the asset persists for the entire pipeline lifetime.
+- **`media_assets` versioning is per-asset, not per-scenario.** Regenerating scene 0's image at version 3 doesn't bump scene 1's version. The `(version, replaced_by_id)` chain lives independently for every scene_render slot.
+- **Regenerate-image requires the scenario to be past `approved`.** Trying to regenerate while in `pending_review` (no scene_renders yet) or already `composing` (the per-aspect masters are downstream-consumed) returns 409.
+- **`scene_renders.status` is per-scene; scenario.status is rolled up.** The roll-up rule is conservative: any single failed render fails the whole scenario (admin needs to retry just the failed scene before the pipeline can advance).
+- **`asyncio.run` per RQ task** — same pattern as the analyzer worker. Acceptable for IO-bound provider calls; if fal latency tail becomes a problem we'd switch to RQ's async support or queue concurrency in CP-M8.
+
+What's deliberately stubbed:
+- Negative prompts / brand_style_suffix injection — the worker has the hook (`_image_prompt`) but doesn't pull from brand_kits yet. CP-M3.5 polish.
+- Seed pinning for deterministic regenerates — `provider.generate(seed=...)` is wired but the API doesn't surface it. CP-M8.
+- Video generation — CP-M4 picks up where image_gen leaves off.
+- Image upscaling / face fixing / model fallback chain — CP-M8 if needed.
 
 ## Open questions (still unresolved — flag if a milestone touches one)
 

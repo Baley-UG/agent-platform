@@ -16,8 +16,10 @@ from sqlmodel import Session
 from app.api.v1.deps import get_project, get_session, require_api_key
 from app.models.projects import Project
 from app.schemas.scenarios import ScenarioCreate, ScenarioRead, ScenarioUpdate
+from app.schemas.scene_renders import RegenerateImageRequest, SceneRenderRead
 from app.services import queue
 from app.services import scenarios as svc
+from app.services import scene_renders as renders_svc
 
 router = APIRouter(
     prefix="/projects/{project_id}/scenarios",
@@ -34,6 +36,16 @@ def _enqueue_analyzer(scenario_id: uuid.UUID) -> Optional[str]:
     except Exception:  # noqa: BLE001
         # We log nothing here; queue.enqueue already increments the metric and
         # the admin panel sees `analyzer_job_id=None` when Redis is down.
+        return None
+
+
+def _enqueue_image_gen(scene_render_id: uuid.UUID, prompt_override: Optional[str] = None) -> Optional[str]:
+    try:
+        job = queue.enqueue(
+            "image_gen", "app.workers.image_gen.run", str(scene_render_id), prompt_override
+        )
+        return job.id
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -120,3 +132,78 @@ def regenerate(
     scenario = svc.begin_regenerate(session, project.id, scenario_id)
     _enqueue_analyzer(scenario.id)
     return ScenarioRead.model_validate(scenario)
+
+
+# ----- scene_renders / image generation -----
+
+
+@router.post("/{scenario_id}/start-images", response_model=ScenarioRead)
+def start_images(
+    scenario_id: uuid.UUID,
+    project: Project = Depends(get_project),
+    session: Session = Depends(get_session),
+) -> ScenarioRead:
+    """Materialize scene_renders × aspect_groups, transition to
+    `generating_images`, enqueue an image_gen job per pending render."""
+    scenario = svc.start_image_generation(session, project.id, scenario_id)
+    renders_svc.materialize_for_scenario(session, scenario)
+    pending = [r for r in renders_svc.list_for_scenario(session, scenario.id) if r.status == "pending"]
+    for render in pending:
+        _enqueue_image_gen(render.id)
+    return ScenarioRead.model_validate(scenario)
+
+
+@router.get("/{scenario_id}/scene-renders", response_model=List[SceneRenderRead])
+def list_scene_renders(
+    scenario_id: uuid.UUID,
+    project: Project = Depends(get_project),
+    session: Session = Depends(get_session),
+) -> List[SceneRenderRead]:
+    # Ensures the scenario exists & belongs to this project, even though the
+    # rows themselves are looked up by scenario_id only.
+    svc.get(session, project.id, scenario_id)
+    return [SceneRenderRead.model_validate(r) for r in renders_svc.list_for_scenario(session, scenario_id)]
+
+
+@router.post(
+    "/{scenario_id}/scenes/{scene_idx}/regenerate-image",
+    response_model=List[SceneRenderRead],
+)
+def regenerate_scene_image(
+    scenario_id: uuid.UUID,
+    scene_idx: int,
+    payload: RegenerateImageRequest = RegenerateImageRequest(),
+    project: Project = Depends(get_project),
+    session: Session = Depends(get_session),
+) -> List[SceneRenderRead]:
+    """Regenerate one scene's image. Without `aspect_ratio`, regenerates all
+    aspect-group masters for that scene; the new image_gen run produces a
+    fresh `media_assets` version, the prior asset chain stays for rollback.
+    """
+    scenario = svc.get(session, project.id, scenario_id)
+    if scenario.status not in ("images_ready", "videos_ready", "audio_ready", "approved", "generating_images", "failed"):
+        # Out of these states the regenerate doesn't make sense (we'd be
+        # racing the auto fan-out or there's nothing to replace yet).
+        from fastapi import HTTPException, status as http_status
+
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT,
+            detail=f"cannot regenerate image while scenario is in status={scenario.status}",
+        )
+
+    aspects = (
+        [payload.aspect_ratio] if payload.aspect_ratio else list(scenario.target_aspect_groups or [])
+    )
+    if not aspects:
+        from fastapi import HTTPException, status as http_status
+
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT, detail="scenario has no target_aspect_groups"
+        )
+
+    enqueued: List = []
+    for aspect in aspects:
+        render = renders_svc.claim_for_image_regenerate(session, scenario_id, scene_idx, aspect)
+        _enqueue_image_gen(render.id, payload.prompt_override)
+        enqueued.append(render)
+    return [SceneRenderRead.model_validate(r) for r in enqueued]
