@@ -1,0 +1,41 @@
+# Render worker — same Python deps as the main image, plus ffmpeg for compose jobs.
+# Used only by the `media_render` RQ queue worker. CPU-bound; scale this container
+# independently of the API / generic worker.
+FROM python:3.13.2-slim
+
+WORKDIR /app
+
+ARG APP_ENV=production
+
+ENV APP_ENV=${APP_ENV} \
+    PYTHONFAULTHANDLER=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=on \
+    PYTHONPATH=/app \
+    VIRTUAL_ENV=/app/.venv \
+    PATH="/app/.venv/bin:${PATH}"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        libpq-dev \
+        curl \
+        ca-certificates \
+        ffmpeg \
+    && pip install --upgrade pip \
+    && pip install uv \
+    && rm -rf /var/lib/apt/lists/* \
+    && ffmpeg -version | head -1
+
+COPY pyproject.toml .
+RUN uv venv /app/.venv \
+    && . /app/.venv/bin/activate \
+    && uv pip install -e .
+
+COPY . .
+
+RUN useradd -m appuser && chown -R appuser:appuser /app
+USER appuser
+
+# Render worker only consumes the media_render queue.
+CMD ["python", "-m", "app.worker", "--queues", "media_render"]

@@ -1,0 +1,65 @@
+[project]
+name = "content-pipeline"
+version = "0.1.0"
+description = "AI content production pipeline — analyze references, generate similar IG/TikTok content, plan and publish."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.121.0",
+    "uvicorn>=0.34.0",
+    "sqlmodel>=0.0.24",
+    "sqlalchemy>=2.0.36",
+    "alembic>=1.13.0",
+    "psycopg[binary]>=3.2.0",
+    "psycopg2-binary>=2.9.10",
+    "pydantic[email]>=2.11.1",
+    "pydantic-settings>=2.8.1",
+    "python-dotenv>=1.1.0",
+    "python-multipart>=0.0.20",
+    "structlog>=25.2.0",
+    "prometheus-client>=0.19.0",
+    "starlette-prometheus>=0.7.0",
+    "slowapi>=0.1.9",
+    "cryptography>=43.0.0",
+    "httpx>=0.28.1",
+    "tenacity>=9.1.2",
+    "boto3>=1.35.0",
+    "rq>=1.16.0",
+    "redis>=5.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["black", "ruff", "pytest>=8.3.5", "pytest-asyncio>=0.24.0", "moto[s3]>=5.0.0"]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+exclude = ["tests*", "alembic*", ".venv*"]
+
+[tool.pytest.ini_options]
+markers = ["slow: marks tests as slow (deselect with '-m \"not slow\"')"]
+python_files = ["test_*.py", "*_test.py", "tests.py"]
+asyncio_mode = "auto"
+
+[tool.black]
+line-length = 119
+exclude = "venv|migrations|.venv"
+
+[tool.ruff]
+line-length = 119
+exclude = ["migrations", "alembic/versions", "*.ipynb", "venv", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "ERA", "D"]
+ignore = ["E501", "F401", "D203", "D213", "B904", "B008", "D100", "D104"]
+unfixable = ["B"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["E402", "F401"]
+"alembic/**" = ["D"]

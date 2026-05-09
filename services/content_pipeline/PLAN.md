@@ -13,10 +13,12 @@ Independent from the existing `ig_scraper` service but integrates with it.
 | Framework | FastAPI (mirror existing pattern) | Same structure as `services/ig_scraper` |
 | DB | Postgres (shared instance), separate schema: `content_pipeline` | Read-only access to `ig_scraper` schema |
 | Job queue | RQ (Redis), shared Redis | Multiple queues, independently scalable workers |
-| LLM (analyzer) | OpenRouter, env-swappable | `OPENROUTER_API_KEY`, `OPENROUTER_MODEL_ANALYZER` (must support vision) |
-| T2I (scene images) | fal.ai (Flux dev/pro) | `FAL_KEY`, model in env |
-| Video generation | Seedance (image-to-video) | `SEEDANCE_API_KEY`, async polling |
-| TTS | ElevenLabs (default), provider interface | `ELEVENLABS_API_KEY`, `voice_id` per brand_kit |
+| LLM (analyzer) | OpenRouter via central `model_routes` table | Vision-capable model required; provider/model swappable at runtime without redeploy |
+| T2I (scene images) | fal.ai (Flux), routed via `model_routes` | Provider/model selectable per task |
+| Video generation | Seedance (image-to-video), routed via `model_routes` | Async polling |
+| TTS | ElevenLabs (default), routed via `model_routes` | `voice_id` per brand_kit |
+| AI model registry | Central `model_routes` table | Maps logical task → provider + model + params; admin-editable; supports fallback chains |
+| Cost ledger | `generation_calls` table | One row per external API call; tokens, units, USD cost, latency |
 | Music | Self-hosted library (S3 upload) | Suno/Udio integration later |
 | Compose | Self-hosted ffmpeg worker (RQ) | CPU-bound, separate container |
 | Storage | Dev: MinIO (local). Prod: Hetzner S3 | Same boto3 code, only env differs |
@@ -224,10 +226,73 @@ budget_cap_usd numeric
 approval_required bool default true
 ```
 
-### 2.18 `cost_estimates` (provider pricing table)
+### 2.18 `model_routes` (central AI model registry)
+
+Maps a logical task to a provider + model + params. Admin-editable through the API; changes apply
+to the next call without redeploy. Multiple rows for the same task form a fallback chain (sorted
+by `priority`).
+
 ```
-provider, model, unit (per_call|per_second|per_image), unit_cost_usd, updated_at
+model_routes
+  id, project_id (nullable; null row = global default)
+  task_key text                # 'scenario_analysis','scene_image','scene_video','voiceover_tts','music_select_llm', ...
+  provider text                # 'openrouter','fal','seedance','elevenlabs','anthropic_direct','openai_direct','ollama_local'
+  model_id text                # 'anthropic/claude-sonnet-4.6','fal-ai/flux-pro/v1.1', ...
+  params jsonb                 # {temperature, max_tokens, quality, ...}
+  priority int                 # lower = primary, higher = fallback
+  enabled bool default true
+
+  # pricing snapshot (for cost estimates)
+  cost_unit text               # 'input_token','output_token','image','video_second','audio_second','call'
+  cost_per_unit_usd numeric(10,8)
+  pricing_updated_at timestamptz
+
+  created_by, created_at, updated_at
+  UNIQUE(project_id, task_key, priority)
 ```
+
+Resolution: `model_router.resolve(project_id, task_key)` checks project-scoped rows first, then
+global (`project_id IS NULL`). Returns the lowest-priority enabled row; primary failure falls
+through to the next.
+
+Admin endpoints:
+```
+GET    /projects/{pid}/model-routes
+PUT    /projects/{pid}/model-routes/{task_key}    # body: provider, model_id, params, priority
+POST   /projects/{pid}/model-routes/{task_key}/test  # latency + cost dry run
+GET    /global/model-routes                       # global defaults
+```
+
+### 2.19 `generation_calls` (per-API-call cost ledger)
+
+One row per external provider call. Written by every provider client wrapper after a successful
+or failed call. Aggregations (per scenario, per project, per week) roll up from this table.
+
+```
+generation_calls
+  id (uuid), project_id
+  scenario_id (nullable), scene_idx (nullable), variant_id (nullable)
+  task_key text                # 'scenario_analysis','scene_image','scene_video', ...
+  provider text, model_id text
+  request_id text              # provider-side id for trace lookups
+
+  # usage (only relevant fields populated per provider)
+  input_tokens int, output_tokens int, cached_tokens int
+  image_count int, video_seconds numeric, audio_seconds numeric
+  unit_count int               # generic counter for "per call" providers
+
+  cost_usd numeric(10,6)       # computed from model_routes pricing snapshot at call time
+  status enum('success','failed','timeout','rate_limited')
+  latency_ms int, error text
+  created_at timestamptz default now()
+```
+
+Indexes: `(project_id, created_at)`, `(scenario_id)`, `(provider, model_id, created_at)`.
+
+Triggers / rollups:
+- `scenarios.generation_cost_usd` updated by trigger on insert (or scheduled rollup).
+- Weekly budget enforcement reads `SUM(cost_usd) WHERE project_id=? AND created_at >= week_start`.
+- Admin dashboard endpoint `GET /projects/{pid}/cost-summary?from=...&to=...`.
 
 ### Indexes & FKs
 - `content_references(project_id, status, imported_at)` index
@@ -416,7 +481,28 @@ PRESETS = {
 }
 ```
 
-### 4.2 Reference Reuse Control
+### 4.2 Regeneration at Every Level (admin override)
+
+The admin can regenerate any artifact in the pipeline. Each regeneration creates a **new version**;
+the previous version stays in S3 (governed by retention policy) and can be rolled back.
+
+| Level | Endpoint | Cost | Notes |
+|---|---|---|---|
+| Whole scenario JSON | `POST /scenarios/{id}/regenerate` | LLM call | Re-runs analyzer; previous scenario_json archived |
+| Single scene image | `POST /scenarios/{id}/scenes/{idx}/regenerate-image` | 1× T2I | Optional `prompt_override` body |
+| Single scene video | `POST /scenarios/{id}/scenes/{idx}/regenerate-video` | 1× I2V | Reuses approved image |
+| Voiceover | `POST /scenarios/{id}/regenerate-voiceover` | 1× TTS | Optional `text_override`, `voice_id_override` |
+| Music selection | `POST /scenarios/{id}/reselect-music` | 0 | Library swap only |
+| Compose only | `POST /variants/{id}/recompose` | ffmpeg time only | Scene videos unchanged; only ffmpeg recipe re-runs |
+| Full variant | `POST /variants/{id}/regenerate-all` | full | Everything from scenes onward |
+
+**Versioning**: `media_assets` carries `version int` and `replaced_by_id uuid`. The currently
+active asset is the latest version with `replaced_by_id IS NULL`. Rollback = a swap back, not a delete.
+
+**UI surface**: each artifact's response includes `version`, `previous_version_id`, and a
+`history_url` listing prior versions for diff/preview.
+
+### 4.3 Reference Reuse Control
 
 `POST /scenarios` body:
 ```json
@@ -563,11 +649,37 @@ event; content_pipeline subscriber runs `intake_rules` automatically.
 
 ## 8. Cost Control
 
-- `cost_estimates` table holds per-provider/per-model prices (admin-editable).
-- Estimated cost is computed at scenario create (scene count × image cost × video cost × tts cost).
-- If `posting_strategy.weekly_budget_cap_usd` is exceeded, scenario generation pauses and an alert fires.
-- Tier flag: `scenario.quality_tier='draft'|'final'` — draft uses cheaper models.
-- Per-scenario max retry, per-scene regen quota.
+- Every external API call writes a `generation_calls` row with tokens/units, USD cost, latency.
+- Pricing snapshot lives on `model_routes.cost_per_unit_usd` — providers compute call cost using
+  the route they were resolved through (immune to provider-side price changes mid-pipeline).
+- Estimated cost at scenario create = scene count × per-task pricing from `model_routes`.
+- `posting_strategy.weekly_budget_cap_usd` enforced via `SUM(generation_calls.cost_usd)` for the
+  project's current week. Exceeding it pauses scenario generation and fires an alert webhook.
+- Tier flag: `scenario.quality_tier='draft'|'final'` — draft uses cheaper rows from `model_routes`
+  (we keep `priority` slot for tier overrides via params).
+- Admin dashboard: per-project cost summary, per-scenario breakdown, per-provider monthly burn.
+
+## 8.1 Cost Optimization Path (deferred)
+
+Phase 1 uses **OpenRouter** for LLM access. OpenRouter takes a small markup (~5% with BYOK,
+near-zero on standard usage). We accept this as a development-velocity premium — one API,
+many models, automatic fallback.
+
+When monthly LLM spend exceeds an internal threshold **and** the product is stable:
+
+1. Implement `app/services/providers/llm/anthropic_direct.py` (and/or `openai_direct.py`),
+   conforming to the same `LLMProvider` interface as `openrouter.py`.
+2. Update the `model_routes` row for `task_key='scenario_analysis'`: set
+   `provider='anthropic_direct'`, point `model_id` at the same Claude model. No schema change.
+3. Direct providers unlock features OpenRouter routes around (e.g. Anthropic prompt caching for
+   90% read discount on stable prompts).
+
+Local model self-hosting (Ollama / vLLM) is a third option with its own GPU and ops cost; only
+worth it past a much higher spend threshold. The provider interface accommodates it without
+schema changes.
+
+The `model_routes.provider` column is `text`, not an enum — adding a new provider is purely a
+code change with no migration.
 
 ---
 
@@ -584,46 +696,55 @@ event; content_pipeline subscriber runs `intake_rules` automatically.
 
 ## 10. Milestones
 
-### M11 — Skeleton, Data Model, Storage, Project CRUD
+> Numbered **CP-Mx** to avoid collision with `ig_scraper`'s own M-numbering.
+> Each service tracks its own milestones in its own CLAUDE.md.
+
+### CP-M1 — Skeleton, Data Model, Storage, Project CRUD
 **Goal**: new service boots; projects, brand_kits, social_accounts, asset upload all work.
 
 - [ ] `services/content_pipeline/` skeleton (FastAPI + RQ + Alembic)
 - [ ] `core/config.py`, `core/s3.py` (boto3 client; MinIO and Hetzner S3 share one code path)
+- [ ] `core/security.py` (Fernet for `social_accounts.credentials_encrypted`)
 - [ ] `docker-compose.override.yml`: MinIO + bucket init service
-- [ ] Alembic migration: `projects`, `brand_kits`, `social_accounts`, `templates`,
-      `music_tracks`, `media_assets`, `cost_estimates`, `content_references` (core tables)
+- [ ] Alembic initial migration: `projects`, `brand_kits`, `social_accounts`, `templates`,
+      `music_tracks`, `media_assets` (with `version`, `replaced_by_id`), `content_references`,
+      `model_routes`, `generation_calls`
 - [ ] Project CRUD API
 - [ ] Brand kit CRUD + asset upload (presigned URL)
-- [ ] Social account CRUD (IG/TT credentials skeleton, encrypted)
+- [ ] Social account CRUD (IG/TT credentials skeleton, encrypted at rest)
 - [ ] Template / music upload API
+- [ ] `model_routes` CRUD (admin) + seed file with global defaults per task_key
+- [ ] `app/services/model_router.py` skeleton (resolution logic, used by CP-M2 onward)
+- [ ] `app/services/providers/llm/base.py` interface stub (concrete impls land in CP-M2)
 - [ ] docker-compose: api + worker + render + scheduler (skeletal)
-- [ ] Smoke test: create project → upload brand asset → see it in S3
+- [ ] Smoke test: create project → upload brand asset → see it in S3 → resolve a model_route
 
-### M12 — References + Intake + Analyzer
+### CP-M2 — References + Intake + Analyzer
 - [ ] `content_references` API (import-from-scraper, manual upload)
 - [ ] `reference_intake_rules` + integration with scraper M8 score
 - [ ] `inbox/candidates` endpoint
-- [ ] OpenRouter analyzer client (vision)
-- [ ] `analyzer_worker`: produce scenario_json + S3 keyframes
+- [ ] OpenRouter LLM provider implementing `LLMProvider` interface
+- [ ] `analyzer_worker`: produce scenario_json + S3 keyframes; writes `generation_calls` row
 - [ ] `scenarios` API: create, get, edit, approve
+- [ ] `POST /scenarios/{id}/regenerate` (versioned)
 - [ ] Reuse check + reuse_policy enforcement
 
-### M13 — Image Generation + Multi-Aspect
-- [ ] fal.ai provider (Flux)
-- [ ] `image_worker`: parallel image generation per scene
+### CP-M3 — Image Generation + Multi-Aspect
+- [ ] fal.ai provider (Flux) implementing `ImageProvider` interface
+- [ ] `image_worker`: parallel image generation per scene; writes `generation_calls`
 - [ ] `scene_renders` aspect group fan-out (9:16, 1:1, 4:5)
-- [ ] Scene image regenerate endpoint
+- [ ] Scene image regenerate endpoint (versioned)
 - [ ] Admin gate: images_ready → animate
 
-### M14 — Video Generation
-- [ ] Seedance provider (I2V, async polling/webhook)
-- [ ] `video_worker`: I2V per scene
-- [ ] Scene video regenerate
+### CP-M4 — Video Generation
+- [ ] Seedance provider (I2V, async polling/webhook) implementing `VideoProvider` interface
+- [ ] `video_worker`: I2V per scene; writes `generation_calls`
+- [ ] Scene video regenerate (versioned)
 - [ ] Admin gate
 
-### M15 — Audio + Compose
-- [ ] ElevenLabs TTS provider
-- [ ] `audio_worker`: voiceover generation
+### CP-M5 — Audio + Compose
+- [ ] ElevenLabs TTS provider implementing `TTSProvider` interface
+- [ ] `audio_worker`: voiceover generation; writes `generation_calls`
 - [ ] Music selection (library query)
 - [ ] ffmpeg `render_worker`:
   - scene concat + transitions (xfade)
@@ -632,9 +753,10 @@ event; content_pipeline subscriber runs `intake_rules` automatically.
   - voiceover + music mix + ducking
   - loudness normalize + platform-spec encode
 - [ ] `render_variants` per-preset compose
+- [ ] Voiceover/music regenerate endpoints, variant recompose, full regenerate-all
 - [ ] Final review + approve API
 
-### M16 — Posting Strategy + Weekly Plan + IG Publish
+### CP-M6 — Posting Strategy + Weekly Plan + IG Publish
 - [ ] `posting_strategy` API
 - [ ] `weekly_plans` + `plan_slots` API
 - [ ] Skeleton generation (preferred_slots × quota)
@@ -644,13 +766,13 @@ event; content_pipeline subscriber runs `intake_rules` automatically.
 - [ ] IG Graph API publisher (resumable upload + container/publish)
 - [ ] Scheduler cron jobs (weekly auto-gen, plan filler, publisher poller)
 
-### M17 — TikTok + Auto-Generation
+### CP-M7 — TikTok + Auto-Generation
 - [ ] TikTok Content Posting API publisher
 - [ ] TikTok scraper support (separate `tt_videos` table in ig_scraper — its own milestone really)
 - [ ] `auto_generation_rules` + scheduler
-- [ ] Budget enforcement
+- [ ] Budget enforcement reading `generation_calls`
 
-### M18+ — Quality / Enhancement
+### CP-M8 — Quality / Enhancement
 - [ ] Perceptual hash + embedding dedup (pgvector)
 - [ ] AI curator (LLM filter on top of intake rules)
 - [ ] Learn `preferred_slots` from IG Insights

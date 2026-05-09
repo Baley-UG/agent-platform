@@ -182,6 +182,118 @@ services:
     networks:
       - monitoring
 
+  # --------------------------------------------------------------------
+  # Redis — shared queue/cache for content_pipeline (RQ).
+  # ig_scraper does not use Redis; this is here for content_pipeline.
+  # --------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: always
+    networks:
+      - monitoring
+
+  # --------------------------------------------------------------------
+  # content_pipeline microservice — four roles, two images
+  # --------------------------------------------------------------------
+  content-pipeline-api:
+    build:
+      context: ./services/content_pipeline
+      args:
+        APP_ENV: ${APP_ENV:-development}
+    env_file:
+      - .env
+    environment:
+      - APP_ENV=${APP_ENV:-development}
+      - POSTGRES_HOST=${POSTGRES_HOST:-db}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+    ports:
+      - "${CP_HOST_PORT:-8082}:8082"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: on-failure
+    networks:
+      - monitoring
+
+  content-pipeline-worker:
+    build:
+      context: ./services/content_pipeline
+      args:
+        APP_ENV: ${APP_ENV:-development}
+    command: ["python", "-m", "app.worker"]
+    env_file:
+      - .env
+    environment:
+      - APP_ENV=${APP_ENV:-development}
+      - POSTGRES_HOST=${POSTGRES_HOST:-db}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: on-failure
+    networks:
+      - monitoring
+
+  content-pipeline-render:
+    build:
+      context: ./services/content_pipeline
+      dockerfile: Dockerfile.ffmpeg
+      args:
+        APP_ENV: ${APP_ENV:-development}
+    env_file:
+      - .env
+    environment:
+      - APP_ENV=${APP_ENV:-development}
+      - POSTGRES_HOST=${POSTGRES_HOST:-db}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: on-failure
+    networks:
+      - monitoring
+
+  content-pipeline-scheduler:
+    build:
+      context: ./services/content_pipeline
+      args:
+        APP_ENV: ${APP_ENV:-development}
+    command: ["python", "-m", "app.scheduler"]
+    env_file:
+      - .env
+    environment:
+      - APP_ENV=${APP_ENV:-development}
+      - POSTGRES_HOST=${POSTGRES_HOST:-db}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: on-failure
+    networks:
+      - monitoring
+
 
 networks:
   monitoring:
@@ -190,3 +302,4 @@ networks:
 volumes:
   grafana-storage:
   postgres-data:
+  redis-data:

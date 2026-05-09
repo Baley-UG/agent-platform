@@ -32,3 +32,93 @@ services:
   ig-scraper-scheduler:
     volumes:
       - ./services/ig_scraper/app:/app/app
+
+  # ------------------------------------------------------------------
+  # content_pipeline — hot-reload + MinIO for dev S3-compatible storage
+  # ------------------------------------------------------------------
+  content-pipeline-api:
+    volumes:
+      - ./services/content_pipeline/app:/app/app
+      - ./services/content_pipeline/alembic:/app/alembic
+      - ./services/content_pipeline/alembic.ini:/app/alembic.ini
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8082", "--reload", "--reload-dir", "/app/app"]
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  content-pipeline-worker:
+    volumes:
+      - ./services/content_pipeline/app:/app/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  content-pipeline-render:
+    volumes:
+      - ./services/content_pipeline/app:/app/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  content-pipeline-scheduler:
+    volumes:
+      - ./services/content_pipeline/app:/app/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ------------------------------------------------------------------
+  # MinIO — S3-compatible object storage for local dev.
+  # Console at http://localhost:9001 (minioadmin / minioadmin).
+  # In prod, drop this override file and point S3_* env at Hetzner.
+  # ------------------------------------------------------------------
+  minio:
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      - MINIO_ROOT_USER=${S3_ACCESS_KEY:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${S3_SECRET_KEY:-minioadmin}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: on-failure
+    networks:
+      - monitoring
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "
+      mc alias set local http://minio:9000 ${S3_ACCESS_KEY:-minioadmin} ${S3_SECRET_KEY:-minioadmin} &&
+      mc mb -p local/${S3_BUCKET:-content-pipeline-dev} || true &&
+      echo 'minio bucket ready: ${S3_BUCKET:-content-pipeline-dev}'
+      "
+    networks:
+      - monitoring
+
+volumes:
+  minio-data:
