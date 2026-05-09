@@ -58,7 +58,7 @@ left off.
 | CP-M1 | Skeleton, data model, storage, project CRUD | ✅ done | abfdac4 |
 | CP-M2 | References + intake + analyzer | ✅ done | b7115d3 |
 | CP-M3 | Image generation + multi-aspect | ✅ done | aeb3750 |
-| CP-M4 | Video generation | ✅ done | _pending commit_ |
+| CP-M4 | Video generation | ✅ done | d235023 |
 | CP-M5 | Audio + compose (end of Phase 1) | ⏳ not started | — |
 | CP-M6 | Posting strategy + weekly plan + IG publish | ⏳ not started | — |
 | CP-M7 | TikTok + auto-generation | ⏳ not started | — |
