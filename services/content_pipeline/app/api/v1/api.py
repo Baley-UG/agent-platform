@@ -4,7 +4,6 @@ from fastapi import APIRouter
 
 from app.api.v1 import (
     assets,
-    auth,
     auto_generation,
     brand_kits,
     cost,
@@ -20,7 +19,6 @@ from app.api.v1 import (
     scenarios,
     social_accounts,
     templates,
-    users,
 )
 
 api_router = APIRouter()
@@ -42,8 +40,5 @@ api_router.include_router(plans.slot_router)
 api_router.include_router(plans.stock_router)
 api_router.include_router(publish.router)
 api_router.include_router(auto_generation.router)
-api_router.include_router(auth.router)
-api_router.include_router(users.router)
-api_router.include_router(users.membership_router)
 api_router.include_router(model_routes.project_router)
 api_router.include_router(model_routes.global_router)

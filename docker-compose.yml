@@ -129,10 +129,11 @@ services:
     environment:
       - APP_ENV=${APP_ENV:-development}
       - POSTGRES_HOST=${POSTGRES_HOST:-db}
-    ports:
-      # Host-side port overridable via IG_SCRAPER_HOST_PORT in .env
-      # so we can sidestep collisions without editing this file.
-      - "${IG_SCRAPER_HOST_PORT:-8081}:8081"
+    # CP-M9 — internal only by default. Main `app/` gateway proxies admin
+    # requests to this service. Dev devs can publish the port through
+    # docker-compose.override.yml when they want to hit it directly.
+    expose:
+      - "8081"
     depends_on:
       db:
         condition: service_healthy
@@ -214,8 +215,10 @@ services:
       - APP_ENV=${APP_ENV:-development}
       - POSTGRES_HOST=${POSTGRES_HOST:-db}
       - REDIS_HOST=${REDIS_HOST:-redis}
-    ports:
-      - "${CP_HOST_PORT:-8082}:8082"
+    # CP-M9 — internal only by default. Main `app/` gateway proxies
+    # admin requests. Dev override can publish the port if needed.
+    expose:
+      - "8082"
     depends_on:
       db:
         condition: service_healthy

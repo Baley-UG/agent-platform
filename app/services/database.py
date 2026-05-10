@@ -20,9 +20,12 @@ from app.core.config import (
     settings,
 )
 from app.core.logging import logger
+from app.models.admin_session import AdminSession  # noqa: F401  (registers table)
+from app.models.project_membership import ProjectMembership  # noqa: F401  (registers table)
 from app.models.session import Session as ChatSession
 from app.models.slack_user_link import SlackUserLink
 from app.models.user import User
+from app.services.schema_migrations import apply as apply_schema_migrations
 
 
 class DatabaseService:
@@ -57,6 +60,10 @@ class DatabaseService:
 
             # Create tables (only if they don't exist)
             SQLModel.metadata.create_all(self.engine)
+
+            # CP-M9 — apply idempotent ALTER TABLE for column additions on
+            # tables that already exist (e.g. user.role).
+            apply_schema_migrations(self.engine)
 
             logger.info(
                 "database_initialized",

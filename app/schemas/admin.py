@@ -1,10 +1,10 @@
-"""Auth + user schemas."""
+"""Admin-panel schemas — auth, users, memberships."""
 
 from __future__ import annotations
 
-import uuid
 from datetime import datetime
 from typing import List, Literal, Optional
+from uuid import UUID
 
 from pydantic import BaseModel, EmailStr, Field
 
@@ -18,14 +18,6 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1)
 
 
-class TokenResponse(BaseModel):
-    access_token: str
-    refresh_token: str
-    expires_at: datetime
-    token_type: Literal["Bearer"] = "Bearer"
-    user: "UserRead"
-
-
 class RefreshRequest(BaseModel):
     refresh_token: str = Field(min_length=1)
 
@@ -36,15 +28,15 @@ class ChangePasswordRequest(BaseModel):
 
 
 class ProjectMembershipRead(BaseModel):
-    id: uuid.UUID
-    project_id: uuid.UUID
+    id: int
+    project_id: UUID
     role: str
 
     model_config = {"from_attributes": True}
 
 
-class UserRead(BaseModel):
-    id: uuid.UUID
+class AdminUserRead(BaseModel):
+    id: int
     email: str
     name: Optional[str]
     role: str
@@ -56,28 +48,32 @@ class UserRead(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class UserCreate(BaseModel):
+class TokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    expires_at: datetime
+    token_type: Literal["Bearer"] = "Bearer"
+    user: AdminUserRead
+
+
+class UserCreateRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=200)
     name: Optional[str] = None
     role: GlobalRole = "member"
 
 
-class UserUpdate(BaseModel):
+class UserUpdateRequest(BaseModel):
     name: Optional[str] = None
     role: Optional[GlobalRole] = None
     status: Optional[UserStatus] = None
     password: Optional[str] = Field(default=None, min_length=8, max_length=200)
 
 
-class MembershipCreate(BaseModel):
-    user_id: uuid.UUID
+class MembershipCreateRequest(BaseModel):
+    user_id: int
     role: ProjectRole = "editor"
 
 
-class MembershipUpdate(BaseModel):
+class MembershipUpdateRequest(BaseModel):
     role: ProjectRole
-
-
-# Pydantic v2 forward-ref resolution
-TokenResponse.model_rebuild()

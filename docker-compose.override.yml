@@ -24,6 +24,10 @@ services:
       - ./services/ig_scraper/alembic:/app/alembic
       - ./services/ig_scraper/alembic.ini:/app/alembic.ini
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8081", "--reload", "--reload-dir", "/app/app"]
+    # CP-M9 dev-only — published on host for direct curl/debug. In prod,
+    # main `app/` gateway is the only public surface.
+    ports:
+      - "${IG_SCRAPER_HOST_PORT:-127.0.0.1:8081}:8081"
 
   ig-scraper-worker:
     volumes:
@@ -42,6 +46,10 @@ services:
       - ./services/content_pipeline/alembic:/app/alembic
       - ./services/content_pipeline/alembic.ini:/app/alembic.ini
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8082", "--reload", "--reload-dir", "/app/app"]
+    # CP-M9 dev-only — published on host for direct curl/debug. In prod,
+    # main `app/` gateway is the only public surface.
+    ports:
+      - "${CP_HOST_PORT:-127.0.0.1:8082}:8082"
     depends_on:
       db:
         condition: service_healthy

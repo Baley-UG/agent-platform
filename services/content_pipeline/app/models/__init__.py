@@ -2,6 +2,10 @@
 
 Importing this package registers every table on `SQLModel.metadata` so
 Alembic autogenerate sees them.
+
+Note (CP-M9): user / project_membership / auth_session tables live in
+the main `app/` service now. content_pipeline is auth-less internally
+and trusts the gateway's X-API-Key.
 """
 
 from app.models.auto_generation_rules import PICK_STRATEGIES, AutoGenerationRule
@@ -18,13 +22,10 @@ from app.models.publish_jobs import PUBLISH_JOB_STATUSES, PublishJob
 from app.models.reference_intake_rules import ReferenceIntakeRule
 from app.models.reference_usages import ReferenceUsage
 from app.models.render_variants import RENDER_VARIANT_STATUSES, RenderVariant
-from app.models.scene_renders import SCENE_RENDER_STATUSES, SceneRender
 from app.models.scenarios import SCENARIO_STATUSES, Scenario
+from app.models.scene_renders import SCENE_RENDER_STATUSES, SceneRender
 from app.models.social_accounts import SocialAccount
 from app.models.templates import Template
-from app.models.project_memberships import PROJECT_ROLES, ProjectMembership
-from app.models.sessions import AuthSession
-from app.models.users import GLOBAL_ROLES, USER_STATUSES, User
 from app.models.weekly_plans import WEEKLY_PLAN_STATUSES, WeeklyPlan
 
 __all__ = [
@@ -56,10 +57,4 @@ __all__ = [
     "PUBLISH_JOB_STATUSES",
     "AutoGenerationRule",
     "PICK_STRATEGIES",
-    "User",
-    "GLOBAL_ROLES",
-    "USER_STATUSES",
-    "ProjectMembership",
-    "PROJECT_ROLES",
-    "AuthSession",
 ]

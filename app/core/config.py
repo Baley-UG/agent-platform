@@ -172,6 +172,25 @@ class Settings:
         self.JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
         self.JWT_ACCESS_TOKEN_EXPIRE_DAYS = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_DAYS", "30"))
 
+        # CP-M9 Admin auth (separate from chat-thread JWT above).
+        # `ADMIN_JWT_SECRET` lets you rotate admin tokens without invalidating
+        # chat-thread tokens. Falls back to JWT_SECRET_KEY when unset.
+        self.ADMIN_JWT_SECRET = os.getenv("ADMIN_JWT_SECRET", "") or self.JWT_SECRET_KEY
+        self.ADMIN_ACCESS_TOKEN_TTL_MINUTES = int(os.getenv("ADMIN_ACCESS_TOKEN_TTL_MINUTES", "60"))
+        self.ADMIN_REFRESH_TOKEN_TTL_DAYS = int(os.getenv("ADMIN_REFRESH_TOKEN_TTL_DAYS", "7"))
+
+        # Bootstrap admin (fires on first startup with empty admin user list).
+        self.BOOTSTRAP_ADMIN_EMAIL = os.getenv("BOOTSTRAP_ADMIN_EMAIL", "")
+        self.BOOTSTRAP_ADMIN_PASSWORD = os.getenv("BOOTSTRAP_ADMIN_PASSWORD", "")
+        self.BOOTSTRAP_ADMIN_NAME = os.getenv("BOOTSTRAP_ADMIN_NAME", "Admin")
+
+        # Downstream microservice URLs + service token (X-API-Key).
+        # Admin panel calls main app only; main app proxies to these.
+        self.CONTENT_PIPELINE_URL = os.getenv("CONTENT_PIPELINE_URL", "http://content-pipeline-api:8082")
+        self.CONTENT_PIPELINE_API_KEY = os.getenv("CP_API_KEY", "")
+        self.IG_SCRAPER_URL = os.getenv("IG_SCRAPER_URL", "http://ig-scraper-api:8081")
+        self.IG_SCRAPER_API_KEY = os.getenv("IG_SCRAPER_API_KEY", "")
+
         # Logging Configuration
         self.LOG_DIR = Path(os.getenv("LOG_DIR", "logs"))
         self.LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
