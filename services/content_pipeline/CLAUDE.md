@@ -63,7 +63,7 @@ left off.
 | CP-M6 | Posting strategy + weekly plan + IG publish | ✅ done | 3423fe5 |
 | CP-M7 | TikTok + auto-generation | ✅ done | 1d9d820 |
 | CP-M6.5 + CP-M8 (selective) | Captions, aggregate progress, dedup, curator | ✅ done | e11aa13 |
-| CP-M8.5 | Auth, users, project memberships | ✅ done | _pending commit_ |
+| CP-M8.5 | Auth, users, project memberships | ✅ done | 131e23b |
 | CP-M8 (rest) | pgvector embeddings, webhooks, outpaint, Suno, etc. | ⏳ deferred | — |
 
 Status legend: ⏳ not started · 🔄 in progress · ✅ done · 🚧 blocked.
