@@ -237,25 +237,6 @@ def remove_membership(session: Session, membership: ProjectMembership) -> None:
     session.commit()
 
 
-# ---------- bootstrap ----------
-
-
-def ensure_bootstrap_admin(session: Session, *, email: str, password: str, name: Optional[str] = None) -> Optional[User]:
-    """Create the first admin if NO admin users exist yet.
-
-    Idempotent — once any admin exists this is a no-op even when env
-    credentials change. Removing an admin then restarting WILL recreate
-    one, but that's a development-only edge case.
-    """
-    if not email or not password:
-        return None
-    has_admin = session.exec(select(User).where(User.role == "admin").limit(1)).first()
-    if has_admin is not None:
-        return None
-    try:
-        user = create_user(session, email=email, password=password, name=name or "Admin", role="admin")
-        logger.info("bootstrap_admin_created", email=email)
-        return user
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("bootstrap_admin_failed", error=str(exc))
-        return None
+# NOTE — first admin is created via the CLI:
+#   docker compose exec app python -m app.cli create-admin --email <...>
+# (see app/cli.py). The CLI calls create_user(role="admin") directly.

@@ -179,10 +179,8 @@ class Settings:
         self.ADMIN_ACCESS_TOKEN_TTL_MINUTES = int(os.getenv("ADMIN_ACCESS_TOKEN_TTL_MINUTES", "60"))
         self.ADMIN_REFRESH_TOKEN_TTL_DAYS = int(os.getenv("ADMIN_REFRESH_TOKEN_TTL_DAYS", "7"))
 
-        # Bootstrap admin (fires on first startup with empty admin user list).
-        self.BOOTSTRAP_ADMIN_EMAIL = os.getenv("BOOTSTRAP_ADMIN_EMAIL", "")
-        self.BOOTSTRAP_ADMIN_PASSWORD = os.getenv("BOOTSTRAP_ADMIN_PASSWORD", "")
-        self.BOOTSTRAP_ADMIN_NAME = os.getenv("BOOTSTRAP_ADMIN_NAME", "Admin")
+        # First admin is created via the CLI, not env. See:
+        #   docker compose exec app python -m app.cli create-admin --email <...>
 
         # Downstream microservice URLs + service token (X-API-Key).
         # Admin panel calls main app only; main app proxies to these.

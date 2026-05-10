@@ -52,22 +52,9 @@ async def lifespan(app: FastAPI):
         version=settings.VERSION,
         api_prefix=settings.API_V1_STR,
     )
-    # CP-M9 — bootstrap the first admin user from env if no admin exists yet.
-    try:
-        from sqlmodel import Session
-
-        from app.services.admin_auth_service import ensure_bootstrap_admin
-        from app.services.database import database_service
-
-        with Session(database_service.engine) as session:
-            ensure_bootstrap_admin(
-                session,
-                email=settings.BOOTSTRAP_ADMIN_EMAIL,
-                password=settings.BOOTSTRAP_ADMIN_PASSWORD,
-                name=settings.BOOTSTRAP_ADMIN_NAME,
-            )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("bootstrap_admin_skipped", error=str(exc))
+    # CP-M9 — admin users are created via the CLI:
+    #   docker compose exec app python -m app.cli create-admin --email <...>
+    # No env-based bootstrap; tighter security (no password sitting in env).
     yield
     logger.info("application_shutdown")
 
