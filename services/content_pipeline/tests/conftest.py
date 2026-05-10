@@ -11,5 +11,6 @@ from cryptography.fernet import Fernet
 # Generate a per-test-session Fernet key so security.py can initialise.
 os.environ.setdefault("CP_SECRET_KEY", Fernet.generate_key().decode())
 os.environ.setdefault("CP_API_KEY", "test-api-key")
+os.environ.setdefault("CP_JWT_SECRET", "test-jwt-secret-not-the-placeholder")
 # Make the analyzer / DB tests skip real network resources.
 os.environ.setdefault("APP_ENV", "test")

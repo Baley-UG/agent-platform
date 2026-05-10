@@ -28,6 +28,15 @@ async def lifespan(app: FastAPI):
         environment=settings.ENVIRONMENT.value,
         api_prefix=settings.API_V1_STR,
     )
+    # Bootstrap the first admin user from env when the table is empty.
+    # Lazy import so non-API processes (worker, scheduler) don't pull
+    # the dependency chain.
+    try:
+        from app.services.bootstrap import ensure_admin
+
+        ensure_admin()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("bootstrap_admin_skipped_on_error", error=str(exc))
     yield
     logger.info("content_pipeline_api_shutdown")
 

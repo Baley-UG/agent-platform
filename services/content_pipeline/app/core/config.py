@@ -143,6 +143,20 @@ class Settings(BaseSettings):
     CP_ANALYZER_MAX_KEYFRAMES: int = Field(default=8)
     CP_ANALYZER_HTTP_TIMEOUT_SECONDS: float = Field(default=120.0)
 
+    # ----- Auth (CP-M8.5) -----
+    # JWT signing secret. Separate from CP_SECRET_KEY (which is Fernet for
+    # social_account credentials at rest) so we can rotate them independently.
+    CP_JWT_SECRET: str = Field(default="changeme-jwt-secret")
+    CP_JWT_ALGORITHM: str = Field(default="HS256")
+    CP_ACCESS_TOKEN_TTL_MINUTES: int = Field(default=60)
+    CP_REFRESH_TOKEN_TTL_DAYS: int = Field(default=7)
+
+    # Bootstrap admin — created on first migration run if no users exist.
+    # Leave blank in dev; set explicitly in prod via .env.
+    CP_BOOTSTRAP_ADMIN_EMAIL: Optional[str] = Field(default=None)
+    CP_BOOTSTRAP_ADMIN_PASSWORD: Optional[str] = Field(default=None)
+    CP_BOOTSTRAP_ADMIN_NAME: Optional[str] = Field(default="Admin")
+
     # Video generation knobs (Seedance / Kling / Runway are async with polling)
     CP_VIDEO_GEN_TIMEOUT_SECONDS: float = Field(
         default=600.0,

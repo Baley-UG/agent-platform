@@ -17,16 +17,38 @@
 | Local dev (docker-compose) | `http://localhost:8082` |
 | Prod | TBD (Hetzner) |
 
-### Auth
+### Auth (CP-M8.5)
 
-Single static API key. Send on every request:
+Two modes accepted:
+
+**1. Bearer JWT (admin panel users — preferred)**
+
+```
+Authorization: Bearer <access_token>
+```
+
+Login via `POST /api/v1/auth/login {email, password}` returns
+`{access_token, refresh_token, expires_at, user}`. Access token is a
+short-lived JWT (1h default); refresh token rotates via
+`POST /api/v1/auth/refresh`.
+
+**2. X-API-Key (workers / cron / legacy callers)**
 
 ```
 X-API-Key: <CP_API_KEY from .env>
 ```
 
-Endpoints **without** the header return `401`. There is no user table, no JWT,
-no per-user scoping yet — that lands in CP-M8.
+Service principal — bypasses per-project membership checks. Backend-only.
+
+Both modes 401 when missing / invalid.
+
+**Roles:**
+- Global: `admin` (full system) or `member` (only assigned projects)
+- Per-project: `owner` / `editor` / `viewer` (in `project_memberships`)
+
+A logged-in `member` without a membership row for a project gets a `404`
+on its endpoints (we don't leak existence). Global `admin` always
+passes; service principals bypass scoping entirely.
 
 ### OpenAPI / typed client
 
@@ -664,7 +686,6 @@ how the data is shaped:
 - Multi-image carousel feed posts — single asset only.
 - Webhook receivers for Meta / TikTok — we poll inside the worker.
 - Real-time WebSocket / SSE — polling only.
-- User-level auth — single static API key for now.
 - Per-slot caption / hashtag override — coming in CP-M6.5 (today the publisher
   ships an empty caption / title).
 - TikTok scraper / `tt_videos` import-from-scraper — not in ig_scraper yet.
@@ -775,7 +796,53 @@ Returns `null` for both fields when no LLM route is configured (fail-open).
 Score is a 0-1 float; the panel can sort the inbox by it once admins
 have curated a few rows.
 
-## 9.8 TikTok publishing (CP-M7)
+## 9.8 Auth + users + memberships (CP-M8.5)
+
+```
+POST   /api/v1/auth/login            {email, password}
+                                       → {access_token, refresh_token, expires_at, user}
+POST   /api/v1/auth/refresh           {refresh_token}
+                                       → same shape; old refresh token rotated/revoked
+POST   /api/v1/auth/logout            {refresh_token}    # 204
+GET    /api/v1/auth/me                                     # who am I + memberships
+POST   /api/v1/auth/change-password   {current_password, new_password}
+
+# Global admin only
+GET    /api/v1/users
+POST   /api/v1/users                  {email, password, name, role}
+GET    /api/v1/users/{id}
+PATCH  /api/v1/users/{id}             {name?, role?, status?, password?}
+DELETE /api/v1/users/{id}
+
+# Project owner (or global admin)
+GET    /api/v1/projects/{pid}/members
+POST   /api/v1/projects/{pid}/members              {user_id, role}
+PATCH  /api/v1/projects/{pid}/members/{user_id}    {role}
+DELETE /api/v1/projects/{pid}/members/{user_id}
+```
+
+**Token lifecycle**:
+- Access token TTL: 60min (configurable: `CP_ACCESS_TOKEN_TTL_MINUTES`)
+- Refresh token TTL: 7d (configurable: `CP_REFRESH_TOKEN_TTL_DAYS`)
+- Refresh rotates: each refresh issues a new pair; the old refresh is
+  revoked. If the user's old refresh leaks, a single use invalidates it
+  (token rotation defense).
+- Logout revokes the refresh row; the access token still works until its
+  expiry — keep TTL short.
+
+**Suggested panel storage**:
+- Access token in memory (Zustand / React Query global state).
+- Refresh token in `localStorage` (or `httpOnly` cookie if your hosting allows).
+- On 401 from a protected call → call `/auth/refresh` once → retry the
+  original request → if refresh fails, navigate to login.
+
+**Bootstrap**: when the `users` table is empty AND
+`CP_BOOTSTRAP_ADMIN_EMAIL` + `CP_BOOTSTRAP_ADMIN_PASSWORD` are set in
+the environment, the API auto-creates an admin user on startup. Set
+these once on the FIRST prod deploy, then remove from env. After that,
+admins invite each other via `POST /users`.
+
+## 9.9 TikTok publishing (CP-M7)
 
 `social_accounts` already supported `provider="tiktok"`. The publisher is now
 wired. Credentials shape: `{"access_token": "...", "open_id": "..."}`.

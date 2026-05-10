@@ -22,6 +22,9 @@ from app.models.scene_renders import SCENE_RENDER_STATUSES, SceneRender
 from app.models.scenarios import SCENARIO_STATUSES, Scenario
 from app.models.social_accounts import SocialAccount
 from app.models.templates import Template
+from app.models.project_memberships import PROJECT_ROLES, ProjectMembership
+from app.models.sessions import AuthSession
+from app.models.users import GLOBAL_ROLES, USER_STATUSES, User
 from app.models.weekly_plans import WEEKLY_PLAN_STATUSES, WeeklyPlan
 
 __all__ = [
@@ -53,4 +56,10 @@ __all__ = [
     "PUBLISH_JOB_STATUSES",
     "AutoGenerationRule",
     "PICK_STRATEGIES",
+    "User",
+    "GLOBAL_ROLES",
+    "USER_STATUSES",
+    "ProjectMembership",
+    "PROJECT_ROLES",
+    "AuthSession",
 ]

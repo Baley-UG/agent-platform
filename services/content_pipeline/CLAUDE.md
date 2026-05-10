@@ -63,6 +63,7 @@ left off.
 | CP-M6 | Posting strategy + weekly plan + IG publish | ✅ done | 3423fe5 |
 | CP-M7 | TikTok + auto-generation | ✅ done | 1d9d820 |
 | CP-M6.5 + CP-M8 (selective) | Captions, aggregate progress, dedup, curator | ✅ done | e11aa13 |
+| CP-M8.5 | Auth, users, project memberships | ✅ done | _pending commit_ |
 | CP-M8 (rest) | pgvector embeddings, webhooks, outpaint, Suno, etc. | ⏳ deferred | — |
 
 Status legend: ⏳ not started · 🔄 in progress · ✅ done · 🚧 blocked.
@@ -494,6 +495,59 @@ What's deferred to later CP-M8/M9:
 - Outpaint-based 9:16 → 16:9 cross-aspect rendering.
 - WebSocket / SSE replacement for the `/progress` polling.
 - User-level auth (single static API key for now).
+
+## CP-M8.5 deliverables
+
+What landed:
+- 3 new tables in migration `0010_cp_m85_auth`:
+  - `users` — `email` (unique), `password_hash` (argon2id), `name`, `role ∈ {admin, member}`, `status ∈ {active, disabled}`, `last_login_at`.
+  - `project_memberships` — `(user_id, project_id, role)` UNIQUE per pair. Per-project role: `owner` / `editor` / `viewer`.
+  - `auth_sessions` — refresh token store. `token_hash` is SHA-256 of the raw token; raw token only lives client-side. `revoked_at` for logout / admin disable.
+- `app/core/auth.py` — pure crypto helpers. Argon2id password hashing (`hash_password`, `verify_password`, `needs_rehash`), HS256 JWT (`issue_access_token`, `decode_access_token`), refresh token issuance + hash. `TokenError` raised on signature/expiry/malformed. Refuses placeholder `CP_JWT_SECRET`.
+- `app/services/auth.py` — `login` / `refresh` / `logout`. Refresh rotates: each refresh revokes the prior session row and creates a new one. Failed login returns 401 ("invalid credentials"); disabled account returns 403.
+- `app/services/users.py` — full user + membership CRUD with email-unique 409 handling.
+- `app/services/bootstrap.py` — on startup, if users table is empty AND `CP_BOOTSTRAP_ADMIN_EMAIL` + `CP_BOOTSTRAP_ADMIN_PASSWORD` are set, creates the admin row. Soft-fails (logs warning) if the table doesn't exist yet (first migration run).
+- `app/api/v1/deps.py` rewritten — `Principal` dataclass with `kind ∈ {user, service}`, `require_auth` accepts EITHER `Authorization: Bearer <jwt>` OR `X-API-Key: <key>`, `require_global_admin` for user-management endpoints, `require_project_role(min_role)` factory for project-scoped role gates. `get_project` enforces membership for user principals (404 on no-membership; we don't leak existence). Service principals bypass scoping.
+- API additions:
+  - `POST /auth/login`, `/refresh`, `/logout` (204), `GET /me`, `POST /change-password`
+  - `POST/GET/PATCH/DELETE /users[/{id}]` — global admin only
+  - `GET/POST/PATCH/DELETE /projects/{pid}/members[/{user_id}]` — project owner or global admin
+  - All existing endpoints accept JWT or X-API-Key (legacy `require_api_key` is now a compat shim over `require_auth`).
+- `app/main.py` lifespan — calls `ensure_admin()` on startup so dev runs `docker compose up` and gets a working login without a manual seed step.
+- `pyproject.toml` — added `pyjwt>=2.10.0` and `argon2-cffi>=23.1.0`.
+- Tests (8 new, **145/145 green**):
+  - `test_auth_core.py` — password round-trip, password rejection (short), JWT issue+decode, garbage rejection, signature mutation rejection, refresh-token-as-access rejection, refresh token uniqueness + hash determinism.
+  - Smoke covers 3 new tables + 7 new route prefixes.
+- Documentation:
+  - `ADMIN_API_GUIDE.md` § 1.2 (auth modes), § 9.8 (auth/users endpoints + token lifecycle + bootstrap).
+  - `.env.example` extended with CP_JWT_*, CP_BOOTSTRAP_ADMIN_* keys.
+
+What works now (verified end-to-end against the running stack):
+- `pytest tests/` → 145/145.
+- Migration 0010 applied; bootstrap admin auto-created on startup.
+- `POST /auth/login` returns valid JWT; `/auth/me` resolves the user.
+- Three auth paths verified:
+  - JWT → 200 (project list returned)
+  - No auth → 401
+  - X-API-Key → 200 (legacy still works)
+
+Critical contract decisions (don't re-debate):
+- **Argon2id, not bcrypt.** Modern KDF; `argon2-cffi` is mature. `needs_rehash` is checked on every login so cost params can be tightened in prod without forced password resets.
+- **Refresh tokens rotate.** Each `/refresh` issues a new pair and revokes the old session row. Stops replay on token leak, costs nothing.
+- **Access tokens are stateless JWTs**, not DB rows. Adds a single `users` lookup per request (we need `user.status`) but no session table read.
+- **Bootstrap is idempotent.** Re-running it with users present is a no-op. Admin can rotate `CP_BOOTSTRAP_ADMIN_PASSWORD` in env without affecting the existing row (only fires on empty table).
+- **`X-API-Key` legacy mode stays.** Workers, scheduler, ig_scraper bridge use it. Future "service tokens" (per-service JWTs) is a CP-M9 polish; today the static key is enough.
+- **Service principals bypass project-membership checks.** Workers need to operate any project regardless of who's logged in. Same for cron jobs and the scraper bridge.
+- **`require_project_role(min_role)` is a factory dependency**, not a class. Easier to read at the route level (`Depends(require_project_role("owner"))`) and trivially testable.
+- **No audit log yet.** User said it's not required for v1. Schema columns (`actor_user_id` on critical tables) can be added in CP-M9 without behavioral change.
+- **Email is normalized lowercase** at write time (`get_by_email` and `create`). Pydantic `EmailStr` validates format; `.test`-style reserved TLDs are rejected by the validator.
+
+What's deliberately stubbed:
+- Forgot-password / email reset flow — out of scope (no email sender configured). Admins reset by editing the user row via `PATCH /users/{id} {password}`.
+- 2FA / WebAuthn — CP-M9 if needed.
+- Audit log — CP-M9 if needed.
+- "Sign out other devices" — schema supports it (`auth_sessions.user_id` index), endpoint not exposed.
+- Per-service tokens (instead of one static `CP_API_KEY`) — CP-M9.
 
 ## Open questions (still unresolved — flag if a milestone touches one)
 
