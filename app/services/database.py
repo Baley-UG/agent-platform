@@ -21,6 +21,7 @@ from app.core.config import (
 )
 from app.core.logging import logger
 from app.models.admin_session import AdminSession  # noqa: F401  (registers table)
+from app.models.project import Project  # noqa: F401  (registers public.projects ORM mapping)
 from app.models.project_membership import ProjectMembership  # noqa: F401  (registers table)
 from app.models.session import Session as ChatSession
 from app.models.slack_user_link import SlackUserLink

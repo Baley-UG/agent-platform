@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 SourceProvider = Literal["instagram", "tiktok", "manual_upload"]
 ReferenceStatus = Literal["candidate", "approved", "archived"]
@@ -26,10 +26,32 @@ class ReferenceManualUpload(BaseModel):
 
 
 class ReferenceImportFromScraper(BaseModel):
-    """Pull an `ig_scraper.ig_posts` row into our reference pool."""
+    """Pull an `ig_scraper.ig_posts` row into our reference pool.
 
-    ig_post_id: str = Field(min_length=1, description="Instagram media pk from ig_scraper.")
+    `ig_post_id` MUST be a JSON string. Instagram media pks are 19-digit
+    integers (e.g. 3892567252147472686) which exceed Javascript's safe
+    `Number.MAX_SAFE_INTEGER` (2^53−1 = 9007199254740991). Sending the
+    pk as a JSON number from the admin panel silently rounds the last
+    few digits — we accept ints here only as a defensive coercion, but
+    the value's already been corrupted in transit.
+    """
+
+    ig_post_id: str = Field(
+        min_length=1,
+        description=(
+            "Instagram media pk from ig_scraper, as a STRING. "
+            "Sending as a JSON number loses precision past 2^53."
+        ),
+    )
     auto_approve: bool = False
+
+    @field_validator("ig_post_id", mode="before")
+    @classmethod
+    def _coerce_int_to_str(cls, v):
+        """Tolerate JSON numbers but warn that precision may already be lost."""
+        if isinstance(v, int):
+            return str(v)
+        return v
 
 
 class ReferenceUpdate(BaseModel):
@@ -48,13 +70,35 @@ class ReferenceRead(BaseModel):
     source_url: Optional[str]
     media_s3_key: Optional[str]
     poster_s3_key: Optional[str]
+    # Ready-to-use presigned GET URLs for the admin panel's `<img>` /
+    # `<video>` tags. The service layer fills these in by signing the
+    # corresponding *_s3_key when S3 is configured; the panel never
+    # needs to round-trip to `/preview-url` for thumbnails. Both fall
+    # back to the IG CDN URL stored in `metadata` when the S3 mirror
+    # is missing.
+    media_url: Optional[str] = None
+    poster_url: Optional[str] = None
     caption: Optional[str]
     transcript: Optional[str]
     hashtags: Optional[List[str]]
-    metadata_json: Optional[dict] = Field(default=None, alias="metadata")
+    # When reading from the ORM object, look for `metadata_json` (the
+    # real column). Do NOT alias to "metadata" — it collides with
+    # SQLAlchemy's class-level `Base.metadata` MetaData object and
+    # Pydantic ends up populating from that instead of the column.
+    # Serialize OUT as `metadata` so the public JSON shape stays clean.
+    metadata_json: Optional[dict] = Field(
+        default=None,
+        validation_alias=AliasChoices("metadata_json"),
+        serialization_alias="metadata",
+    )
     status: str
     imported_by: Optional[str]
     imported_at: datetime
+    # How many scenarios already reference this row. Drives the
+    # "has scenario" badge on the references grid; admins can spot
+    # un-used candidates at a glance and avoid re-using the same
+    # reference when reuse_policy='warn'. Filled in by `svc.to_read`.
+    scenarios_count: int = 0
 
     model_config = {"from_attributes": True, "populate_by_name": True}
 

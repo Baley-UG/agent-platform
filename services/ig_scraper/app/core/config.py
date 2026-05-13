@@ -1,6 +1,14 @@
-"""Application configuration.
+"""Application configuration — single source of truth for tuning knobs.
 
-Reads env vars (with .env file fallback) for the ig_scraper service.
+This file is the catalogue. Every `Field(default=...)` below is the
+production-ready value; .env only needs to override when a particular
+deployment differs from the default. Secrets (`IG_SCRAPER_API_KEY`,
+`IG_SECRET_KEY`) and host-specific stuff (`IG_SCRAPER_HOST_PORT`,
+`POSTGRES_*`) live in .env. Tuning (delays, quotas, page counts,
+scoring weights, retention) lives HERE with explanations next to each
+knob — so an operator skimming this file understands the system without
+chasing values across multiple files.
+
 Reuses the same POSTGRES_* keys as the main agent-platform so both can
 talk to the same database without duplicating credentials.
 """
@@ -179,7 +187,23 @@ class Settings(BaseSettings):
     IG_WARMUP_HOURS: int = Field(default=72)
 
     # ----- Job knobs -----
+    # Hard upper bound for any single scrape job. Per-job `max_posts` is
+    # clamped to this so a typo can't blow up the HikerAPI bill.
     IG_MAX_POSTS_PER_JOB: int = Field(default=2000)
+    # Default page size on HikerAPI's chunked endpoints. The two
+    # "default posts to fetch" knobs below are expressed in PAGES and
+    # multiplied by this value at job time so they're easier to reason
+    # about ("3 pages" vs "150 posts").
+    IG_DEFAULT_PAGE_SIZE: int = Field(default=50)
+    # First-ever scrape of a target: how many pages to walk.
+    # default 10 × 50 = 500 posts. Set to a higher number for an
+    # initial deep history pull.
+    IG_FULL_BACKFILL_DEFAULT_PAGES: int = Field(default=10)
+    # Recurring scrapes after first_backfill_done=true: most accounts
+    # post 1-3 times a week, so 3 pages is more than enough to catch
+    # everything new since the last run. Override per-job with
+    # `params.max_posts` if you need deeper history occasionally.
+    IG_INCREMENTAL_DEFAULT_PAGES: int = Field(default=3)
     IG_COMMENT_DEFAULT_LIMIT: int = Field(default=50)
     IG_DEFAULT_INTERVAL_HOURS: int = Field(default=24)
     IG_TARGET_INTERVAL_JITTER_PCT: int = Field(default=15)
@@ -202,6 +226,25 @@ class Settings(BaseSettings):
     # ----- Canary (M10) -----
     IG_CANARY_TARGET: Optional[str] = Field(default=None, description="Username probed hourly with the canary account.")
     IG_CANARY_INTERVAL_HOURS: int = Field(default=1)
+
+    # ----- S3 mirror for scraped media -----
+    # When `IG_MIRROR_MEDIA='auto'`, posts whose author is on an active
+    # tracked target (or which are explicitly pinned) get copied to
+    # this bucket at scrape time so we can view them after IG CDN
+    # URLs expire (1-7 days). `'always'` mirrors every persisted post
+    # (storage-heavy); `'never'` disables the feature.
+    IG_MIRROR_MEDIA: str = Field(default="auto", description="auto | always | never")
+    IG_MIRROR_MAX_BYTES: int = Field(default=50 * 1024 * 1024)
+    IG_MIRROR_TIMEOUT_SECONDS: float = Field(default=30.0)
+    # Shared with content_pipeline. ig_scraper writes under the prefix
+    # `instagram-scraper/posts/<post_id>/...` to keep namespaces clean.
+    S3_ENDPOINT: Optional[str] = Field(default=None)
+    S3_BUCKET: Optional[str] = Field(default=None)
+    S3_ACCESS_KEY: Optional[str] = Field(default=None)
+    S3_SECRET_KEY: Optional[str] = Field(default=None)
+    S3_REGION: str = Field(default="us-east-1")
+    S3_USE_PATH_STYLE: bool = Field(default=True)
+    S3_PRESIGNED_URL_TTL_SECONDS: int = Field(default=3600)
 
     # ----- HikerAPI (third-party Instagram data provider) -----
     # When USE_HIKERAPI=true, scrapers route through HikerAPI's REST

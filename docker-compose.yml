@@ -40,7 +40,13 @@ services:
       db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      # `curl` isn't shipped in the slim image; use Python (always present)
+      # so the healthcheck doesn't fail with "exec: curl not found".
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5).status"
       interval: 30s
       timeout: 10s
       retries: 3
@@ -62,21 +68,59 @@ services:
       - monitoring
     restart: always
 
-  # Grafana
+  # Grafana — published on 3010 (3000 reserved for the admin panel dev server)
   grafana:
     image: grafana/grafana:latest
     ports:
-      - "3000:3000"
+      - "3010:3000"
     volumes:
       - grafana-storage:/var/lib/grafana
       - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
       - ./grafana/dashboards/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_USERS_ALLOW_SIGN_UP=false
+      # Used by the provisioned Postgres datasource (datasources.yml)
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    depends_on:
+      - loki
+      - prometheus
     networks:
       - monitoring
     restart: always
+
+  # ------------------------------------------------------------------
+  # Loki — log aggregator. Promtail (below) tails Docker container
+  # logs and ships them here. Grafana queries via the provisioned
+  # Loki datasource. 7-day retention configured in loki-config.yml.
+  # ------------------------------------------------------------------
+  loki:
+    image: grafana/loki:2.9.4
+    command: ["-config.file=/etc/loki/loki-config.yml"]
+    volumes:
+      - ./loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki-data:/loki
+    networks:
+      - monitoring
+    restart: on-failure
+
+  # Promtail — discovers Docker containers via the daemon socket and
+  # forwards their stdout/stderr to Loki. See promtail-config.yml.
+  promtail:
+    image: grafana/promtail:2.9.4
+    command: ["-config.file=/etc/promtail/promtail-config.yml"]
+    volumes:
+      - ./promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - promtail-positions:/tmp
+    depends_on:
+      - loki
+    networks:
+      - monitoring
+    restart: on-failure
 
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:latest
@@ -306,3 +350,5 @@ volumes:
   grafana-storage:
   postgres-data:
   redis-data:
+  loki-data:
+  promtail-positions:

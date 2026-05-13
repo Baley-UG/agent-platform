@@ -1,0 +1,52 @@
+## Promtail — tails Docker container logs and ships them to Loki.
+## Uses Docker service discovery: every running container becomes a target,
+## labelled by compose project/service so we can query them per-service in
+## Grafana. Only containers from the `agent-platform` compose project are
+## scraped (filter via relabel below).
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+  log_level: warn
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 10s
+    relabel_configs:
+      # Only keep containers from this compose project
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_project']
+        regex: 'agent-platform'
+        action: keep
+      # service name (e.g. ig-scraper-worker)
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        target_label: 'service'
+      # full container name (e.g. agent-platform-ig-scraper-worker-1)
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.*)'
+        target_label: 'container'
+      # image
+      - source_labels: ['__meta_docker_container_log_stream']
+        target_label: 'stream'
+    pipeline_stages:
+      # Strip ANSI escape sequences first so the level regex below works
+      # whether or not the producer emitted colored output. structlog's
+      # ConsoleRenderer wraps level names in ANSI codes by default.
+      - replace:
+          expression: '\x1b\[[0-9;]*m'
+          replace: ''
+      # Lift the log level from the structlog-style line so we can filter
+      # with `| level="error"` in LogQL. Matches:
+      #   2026-...Z [info     ] worker_starting [ig_scraper] ...
+      #   2026-...Z [error    ] worker_loop_unhandled ...
+      - regex:
+          expression: '\[(?P<level>info|warn|warning|error|debug|critical)\s*\]'
+      - labels:
+          level:

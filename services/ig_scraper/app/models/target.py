@@ -28,7 +28,7 @@ class ScanTarget(SQLModel, table=True):
     fetch_feed: bool = Field(default=True)
     fetch_stories: bool = Field(default=True)
     fetch_highlights: bool = Field(default=False)
-    fetch_comments: bool = Field(default=True)
+    fetch_comments: bool = Field(default=False)
     comment_limit: int = Field(default=50)
     min_likes: Optional[int] = Field(default=None)
     min_impressions: Optional[int] = Field(default=None)

@@ -8,6 +8,7 @@ from fastapi import APIRouter
 
 from app.api.v1.admin_auth import router as admin_auth_router
 from app.api.v1.admin_gateway import router as admin_gateway_router
+from app.api.v1.admin_projects import router as admin_projects_router
 from app.api.v1.admin_users import membership_router as admin_membership_router
 from app.api.v1.admin_users import users_router as admin_users_router
 from app.api.v1.auth import router as auth_router
@@ -24,10 +25,14 @@ api_router.include_router(chatbot_router, prefix="/chatbot", tags=["chatbot"])
 api_router.include_router(marketing_router, prefix="/marketing", tags=["marketing"])
 api_router.include_router(slack_router, prefix="/slack", tags=["slack"])
 
-# CP-M9 admin panel routers (auth + users + memberships)
+# CP-M9 admin panel routers (auth + users + memberships + projects)
 api_router.include_router(admin_auth_router)
 api_router.include_router(admin_users_router)
 api_router.include_router(admin_membership_router)
+# Project entity CRUD lives in main app (table is public.projects);
+# downstream sub-resources (brand-kits, scenarios, plan-slots, etc.)
+# remain under /cp/projects/{pid}/... via the gateway.
+api_router.include_router(admin_projects_router)
 
 # Hybrid gateway — proxies to content_pipeline + ig_scraper. Registered
 # LAST so explicit endpoints above take precedence over the catch-all.

@@ -178,6 +178,26 @@ def upsert_post(
 
         logger.warning("inline_score_failed", post_id=post_id, error=str(exc))
 
+    # Mirror media to S3 if policy says so (env IG_MIRROR_MEDIA).
+    # IG CDN URLs expire in 1-7 days; tracked-author posts get mirrored
+    # at scrape time so they remain viewable in the panel months later.
+    # Failures are non-fatal — the post row is already committed and
+    # the panel will fall back to the (eventually-dead) IG URL.
+    try:
+        from app.services import mirror
+
+        if mirror.should_mirror(session, author_id=author_id):
+            mirror.mirror_post_media(
+                session,
+                post_id=post_id,
+                media_urls=_collect_media_urls(media),
+                thumbnail_url=media.get("thumbnail_url"),
+            )
+    except Exception as exc:  # noqa: BLE001
+        from app.core.logging import logger
+
+        logger.warning("inline_mirror_failed", post_id=post_id, error=str(exc))
+
     return post_id
 
 

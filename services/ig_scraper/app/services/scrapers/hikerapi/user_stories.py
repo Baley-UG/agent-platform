@@ -46,19 +46,30 @@ async def _fetch_stories(
 ) -> list:
     """HikerAPI returns the full tray in one shot — no pagination needed.
 
-    The verified path is `/v2/user/stories/by/username` (or `/by/id`).
-    We prefer username when known to avoid an extra resolve hop.
+    Endpoints (per openapi.json):
+      - `/v2/user/stories/by/username?username=<u>`   → preferred when known
+      - `/v2/user/stories?user_id=<id>`               → by-id fallback
+      (note: spec is `/v2/user/stories`, NOT `/v2/user/stories/by/id`)
+
+    Both responses share the shape:
+      { "reel": { "items": [...story items...], ... }, "status": "ok" }
+    We dig into `reel.items` to get the actual stories list.
     """
     if username:
         payload = await client.get("/v2/user/stories/by/username", username=username)
     else:
-        payload = await client.get("/v2/user/stories/by/id", id=user_id)
+        payload = await client.get("/v2/user/stories", user_id=user_id)
     if isinstance(payload, list):
         return payload
     if not isinstance(payload, dict):
         return []
-    # Different HikerAPI versions wrap stories under different keys;
-    # tolerate the common ones.
+    # Canonical path: payload.reel.items (current HikerAPI shape).
+    reel = payload.get("reel")
+    if isinstance(reel, dict):
+        items = reel.get("items")
+        if isinstance(items, list):
+            return items
+    # Defensive fallbacks for older / future shapes.
     for key in ("stories", "items", "reels", "response"):
         candidate = payload.get(key)
         if isinstance(candidate, list):

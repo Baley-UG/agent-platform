@@ -38,6 +38,7 @@ def _make_client():
 
 
 _client = None
+_presign_client = None
 
 
 def client():
@@ -46,6 +47,49 @@ def client():
     if _client is None:
         _client = _make_client()
     return _client
+
+
+def presign_client():
+    """Separate client used ONLY for generating presigned URLs.
+
+    When `S3_PUBLIC_ENDPOINT` is set (typical dev: MinIO host port), we
+    sign against that URL so the resulting links match the host the
+    browser will use. Without this, SigV4 host-header binding makes the
+    URL 403 the moment we rewrite the host string after signing.
+
+    For uploads / downloads inside the worker, `client()` (above) still
+    uses the internal endpoint.
+    """
+    global _presign_client
+    if _presign_client is None:
+        endpoint = (
+            getattr(settings, "S3_PUBLIC_ENDPOINT", None) or settings.S3_ENDPOINT
+        )
+        _presign_client = boto3.client(
+            "s3",
+            endpoint_url=endpoint,
+            aws_access_key_id=settings.S3_ACCESS_KEY,
+            aws_secret_access_key=settings.S3_SECRET_KEY,
+            region_name=settings.S3_REGION,
+            config=Config(
+                signature_version="s3v4",
+                s3={
+                    "addressing_style": "path" if settings.S3_USE_PATH_STYLE else "virtual"
+                },
+                retries={"max_attempts": 3, "mode": "standard"},
+            ),
+        )
+    return _presign_client
+
+
+def is_configured() -> bool:
+    """Best-effort check that S3 credentials + bucket are populated.
+
+    Used by callers that should skip S3 ops silently (no exception)
+    when running with `S3_*` env unset — e.g. dev images that don't
+    use MinIO or production deployments without provider keys.
+    """
+    return bool(settings.S3_BUCKET and settings.S3_ACCESS_KEY and settings.S3_SECRET_KEY)
 
 
 def ensure_bucket() -> None:
@@ -104,8 +148,12 @@ def presigned_put_url(key: str, content_type: Optional[str] = None, ttl: Optiona
 
 
 def presigned_get_url(key: str, ttl: Optional[int] = None) -> str:
-    """Generate a presigned GET URL for short-lived asset reads."""
-    return client().generate_presigned_url(
+    """Generate a presigned GET URL for short-lived asset reads.
+
+    Signs against `S3_PUBLIC_ENDPOINT` (when set) so the URL works from
+    the browser without breaking SigV4's host-header binding.
+    """
+    return presign_client().generate_presigned_url(
         "get_object",
         Params={"Bucket": settings.S3_BUCKET, "Key": key},
         ExpiresIn=ttl or settings.S3_PRESIGNED_URL_TTL_SECONDS,

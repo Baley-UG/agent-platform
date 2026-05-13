@@ -9,6 +9,7 @@ roll-up when a `scenario_id` is supplied.
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import update
@@ -67,10 +68,16 @@ def record(
     session.add(row)
 
     if scenario_id is not None and cost_usd:
+        # `scenarios.generation_cost_usd` is a Numeric column → Decimal in
+        # Python. Adding a float would crash SQLAlchemy's synchronize-by-
+        # evaluate path (Decimal + float is unsupported). Cast to Decimal
+        # via str() to avoid float-rounding artifacts in the conversion.
+        cost_decimal = cost_usd if isinstance(cost_usd, Decimal) else Decimal(str(cost_usd))
         session.exec(
             update(Scenario)
             .where(Scenario.id == scenario_id)
-            .values(generation_cost_usd=Scenario.generation_cost_usd + cost_usd)
+            .values(generation_cost_usd=Scenario.generation_cost_usd + cost_decimal)
+            .execution_options(synchronize_session=False)
         )
 
     session.flush()

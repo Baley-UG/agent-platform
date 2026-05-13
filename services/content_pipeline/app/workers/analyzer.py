@@ -21,8 +21,114 @@ from app.services import model_router
 from app.services import scenarios as scenarios_svc
 from app.services.analyzer import analyze_reference
 from app.services.database import session_scope
-from app.services.providers.llm.base import LLMProvider
+from app.services.providers.llm.base import LLMProvider, VisionInput
 from app.services.providers.llm.openrouter import OpenRouterProvider
+
+
+# Max images sent to the vision LLM for one analysis. Each image costs
+# ~700-1000 tokens on Claude/GPT-vision; 4 keeps cost bounded while
+# covering most carousels (3-5 slides typical) without missing slides.
+_MAX_VISION_IMAGES = 4
+
+
+def _collect_vision_inputs(reference: ContentReference) -> list[VisionInput]:
+    """Build the list of images to feed the vision LLM.
+
+    Critical: presigned URLs to our private S3 (e.g. `http://minio:9000/...`)
+    are NOT reachable from OpenRouter. We download bytes inside the
+    worker and inline them as base64.
+
+    Source preference:
+      1. For carousels: pull EVERY slide's S3-mirrored bytes (up to
+         `_MAX_VISION_IMAGES`). Without this we'd send just the cover
+         slide and the LLM would fabricate the remaining scenes.
+      2. For single photos / videos: just the poster (or media for an
+         image post).
+      3. Fallback to public IG CDN URLs if S3 mirror is missing — IG
+         CDN IS publicly reachable.
+
+    Returns `[]` when nothing usable; LLM falls back to text-only and
+    we log a warning so it's obvious in operations.
+    """
+    import base64
+    import io as _io
+
+    from app.core import s3 as s3lib
+    from app.core.config import settings
+
+    inputs: list[VisionInput] = []
+    meta = reference.metadata_json or {}
+    media_type = meta.get("media_type")
+    is_carousel = media_type == 8
+
+    # ---- Pass 1: download whatever we have mirrored in S3 ----
+    if s3lib.is_configured():
+        keys: list[str] = []
+        if is_carousel and reference.media_s3_key:
+            # Today we only mirror the first slide. Find any further
+            # slides under the same project prefix in metadata, then
+            # mirror them on demand.
+            keys.append(reference.media_s3_key)
+        else:
+            preferred = reference.poster_s3_key or reference.media_s3_key
+            if preferred:
+                keys.append(preferred)
+
+        for k in keys[:_MAX_VISION_IMAGES]:
+            try:
+                buf = _io.BytesIO()
+                s3lib.client().download_fileobj(settings.S3_BUCKET, k, buf)
+                data = buf.getvalue()
+                head = s3lib.head_object(k) or {}
+                mime = head.get("ContentType") or _guess_mime_from_key(k)
+                inputs.append(
+                    VisionInput(
+                        base64=base64.b64encode(data).decode("ascii"),
+                        mime_type=mime,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("vision_s3_inline_failed", key=k, error=str(exc))
+
+    # ---- Pass 2: pull missing carousel slides from IG CDN ----
+    # For carousels, augment with the remaining IG media URLs from the
+    # metadata so the LLM sees ALL slides, not just the cover. We send
+    # these as direct URLs (IG CDN is publicly fetchable) so OpenRouter
+    # can pull them. Falls back silently when the URL has expired.
+    if is_carousel:
+        ig_urls = meta.get("ig_media_urls") or []
+        if isinstance(ig_urls, list):
+            # Skip slide 0 (already covered by S3 mirror above), take next.
+            remaining = ig_urls[1:_MAX_VISION_IMAGES]
+            for url in remaining:
+                if isinstance(url, str) and url:
+                    inputs.append(VisionInput(url=url))
+
+    # ---- Pass 3: total fallback to IG CDN if no S3 mirror at all ----
+    if not inputs:
+        cdn_url = meta.get("ig_thumbnail_url")
+        if not cdn_url:
+            ig_urls = meta.get("ig_media_urls") or []
+            if isinstance(ig_urls, list) and ig_urls:
+                cdn_url = ig_urls[0]
+        if cdn_url:
+            inputs.append(VisionInput(url=str(cdn_url)))
+
+    return inputs[:_MAX_VISION_IMAGES]
+
+
+def _guess_mime_from_key(key: str) -> str:
+    """Best-effort mime guess from an S3 key extension."""
+    lower = key.lower()
+    if lower.endswith((".jpg", ".jpeg")):
+        return "image/jpeg"
+    if lower.endswith(".png"):
+        return "image/png"
+    if lower.endswith(".webp"):
+        return "image/webp"
+    if lower.endswith(".gif"):
+        return "image/gif"
+    return "image/jpeg"
 
 
 def _build_provider(provider_name: str) -> LLMProvider:
@@ -72,6 +178,12 @@ def run(scenario_id: str, brand_style_suffix: Optional[str] = None) -> dict:
 
         provider = _build_provider(route.provider)
 
+        # Build vision_inputs from the reference's mirrored image (or
+        # the still-live IG CDN URL as fallback) so the LLM actually
+        # SEES what's in the reference instead of hallucinating from
+        # caption text alone.
+        vision_inputs = _collect_vision_inputs(reference)
+
         try:
             scenario_json, response = asyncio.run(
                 analyze_reference(
@@ -79,6 +191,7 @@ def run(scenario_id: str, brand_style_suffix: Optional[str] = None) -> dict:
                     route=route,
                     provider=provider,
                     brand_style_suffix=brand_style_suffix,
+                    vision_inputs=vision_inputs,
                 )
             )
         except Exception as exc:  # noqa: BLE001

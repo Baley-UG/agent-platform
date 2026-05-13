@@ -113,15 +113,21 @@ async def _fetch_user(client: HikerAPIClient, username: str) -> Optional[Dict[st
     return user
 
 
-async def _walk_medias(
+async def _iter_medias(
     client: HikerAPIClient,
     *,
     user_id: int,
     stop_at_post_id: Optional[int],
     stop_at_taken_at: Optional[datetime],
     hard_cap: int,
-) -> List[Dict[str, Any]]:
-    """Paginate /v2/user/medias/chunk until cursor / cap / stop condition."""
+):
+    """Yield each normalised media as it arrives from HikerAPI.
+
+    Important: this is a streaming iterator, NOT a buffer. The caller
+    persists each media inside its own loop iteration, so a mid-flight
+    402/429 keeps everything saved so far. The old buffered version lost
+    all data on partial failure.
+    """
 
     def _stop(media: Dict[str, Any]) -> bool:
         media_id = int(media.get("pk") or media.get("id") or 0)
@@ -132,7 +138,6 @@ async def _walk_medias(
             return True
         return False
 
-    medias: List[Dict[str, Any]] = []
     async for media in client.paginate_chunks(
         "/v1/user/medias/chunk",
         items_key="response",
@@ -144,18 +149,29 @@ async def _walk_medias(
         # outer payload uses "response" as the list key on some HikerAPI
         # versions. paginate_chunks already tolerates a missing key (no
         # items → empty page → loop ends), so this is the right value.
-        medias.append(_normalise_media(media))
-    return medias
+        yield _normalise_media(media)
 
 
 async def _fetch_comments(
     client: HikerAPIClient, media_id: int, limit: int
 ) -> List[Dict[str, Any]]:
+    """Fetch up to `limit` comments for a media id.
+
+    `/v1/media/comments/chunk` per openapi.json:
+      - Required: `id=<media_id>`
+      - Optional pagination: `max_id` / `min_id` (NOT `end_cursor`)
+      - Response: bare `Array<object>` (no wrapper, no cursor element)
+
+    paginate_chunks sees a bare array and returns after the first page —
+    which is what we want most of the time: comment fetching defaults to
+    OFF (fetch_comments=false), so this code path rarely fires, and when
+    it does we cap at IG_COMMENT_DEFAULT_LIMIT (~50) anyway. If deep
+    comment pagination becomes a need, switch to a dedicated walker that
+    threads `max_id` through successive calls.
+    """
     if limit <= 0:
         return []
     out: List[Dict[str, Any]] = []
-    # v2 has /v2/media/comments but no /chunk variant; v1 exposes the
-    # paginated version we need.
     async for comment in client.paginate_chunks(
         "/v1/media/comments/chunk",
         items_key="response",
@@ -249,10 +265,24 @@ async def _run(
     full_backfill: bool,
 ) -> ScrapeResult:
     params = job.params or {}
-    fetch_comments_flag = bool(params.get("fetch_comments", True))
+    fetch_comments_flag = bool(params.get("fetch_comments", False))
     comment_limit = int(params.get("comment_limit", settings.IG_COMMENT_DEFAULT_LIMIT))
-    hard_cap = settings.IG_MAX_POSTS_PER_JOB if full_backfill else min(
-        settings.IG_MAX_POSTS_PER_JOB, int(params.get("max_posts", 200))
+    # `max_posts` is honoured for both full and incremental backfills so
+    # the caller can say "just grab the latest 30 posts" without writing
+    # a custom job type. Capped at IG_MAX_POSTS_PER_JOB so a typo can't
+    # nuke the budget. Defaults are EXPRESSED IN PAGES via env so ops
+    # can reason about "3 pages" not "150 posts":
+    #   - Full backfill default: IG_FULL_BACKFILL_DEFAULT_PAGES × page_size
+    #   - Incremental default:   IG_INCREMENTAL_DEFAULT_PAGES × page_size
+    _default_pages = (
+        settings.IG_FULL_BACKFILL_DEFAULT_PAGES
+        if full_backfill
+        else settings.IG_INCREMENTAL_DEFAULT_PAGES
+    )
+    _default_max = _default_pages * settings.IG_DEFAULT_PAGE_SIZE
+    hard_cap = min(
+        settings.IG_MAX_POSTS_PER_JOB,
+        int(params.get("max_posts", _default_max)),
     )
 
     since: Optional[datetime] = None
@@ -308,54 +338,87 @@ async def _run(
                 (None, None) if full_backfill else _resolve_target_cursor(job.scan_target_id)
             )
 
-            medias = await _walk_medias(
-                client,
-                user_id=user_id,
-                stop_at_post_id=stop_post_id,
-                stop_at_taken_at=stop_taken_at,
-                hard_cap=hard_cap,
-            )
-            api_calls += max(1, (len(medias) // settings.HIKERAPI_PAGE_SIZE) + 1)
-
-            for media in medias:
-                decision = passes_filter(
-                    like_count=int(media.get("like_count") or 0),
-                    play_count=media.get("play_count"),
-                    view_count=media.get("view_count"),
-                    taken_at=_to_naive_utc(media.get("taken_at")) or datetime.now(timezone.utc),
-                    min_likes=job.min_likes,
-                    min_impressions=job.min_impressions,
-                    since=since,
-                )
-                if not decision.passed:
-                    skipped += 1
-                    continue
-
-                with session_scope() as session:
-                    audio_id = upsert_audio_track(session, media.get("music_info"))
-                    post_id = upsert_post(
-                        session,
-                        media=media,
-                        author_id=user_id,
-                        job_id=job.id,
-                        audio_track_id=audio_id,
+            # STREAMING save loop: each media is persisted as it lands.
+            # A mid-flight 402/429 leaves everything-so-far in the DB,
+            # instead of discarding hundreds of fetched pages.
+            seen_medias: List[Dict[str, Any]] = []
+            partial_failure_exc: Optional[HikerAPIError] = None
+            try:
+                async for media in _iter_medias(
+                    client,
+                    user_id=user_id,
+                    stop_at_post_id=stop_post_id,
+                    stop_at_taken_at=stop_taken_at,
+                    hard_cap=hard_cap,
+                ):
+                    seen_medias.append(media)
+                    decision = passes_filter(
+                        like_count=int(media.get("like_count") or 0),
+                        play_count=media.get("play_count"),
+                        view_count=media.get("view_count"),
+                        taken_at=_to_naive_utc(media.get("taken_at")) or datetime.now(timezone.utc),
+                        min_likes=job.min_likes,
+                        min_impressions=job.min_impressions,
+                        since=since,
                     )
-                    posts_saved += 1
+                    if not decision.passed:
+                        skipped += 1
+                        continue
 
-                if fetch_comments_flag and comment_limit > 0:
-                    try:
-                        comments = await _fetch_comments(client, post_id, comment_limit)
-                        api_calls += max(1, (len(comments) // settings.HIKERAPI_PAGE_SIZE) + 1)
-                        with session_scope() as session:
-                            comments_saved += upsert_comments(session, post_id, comments)
-                    except HikerAPIError as exc:
-                        logger.warning(
-                            "hikerapi_comment_fetch_failed",
-                            post_id=post_id,
-                            error=str(exc),
+                    with session_scope() as session:
+                        audio_id = upsert_audio_track(session, media.get("music_info"))
+                        post_id = upsert_post(
+                            session,
+                            media=media,
+                            author_id=user_id,
+                            job_id=job.id,
+                            audio_track_id=audio_id,
                         )
+                        posts_saved += 1
 
-            _update_cursor_after_run(job, medias, full_backfill=full_backfill)
+                    if fetch_comments_flag and comment_limit > 0:
+                        try:
+                            comments = await _fetch_comments(client, post_id, comment_limit)
+                            api_calls += max(1, (len(comments) // settings.HIKERAPI_PAGE_SIZE) + 1)
+                            with session_scope() as session:
+                                comments_saved += upsert_comments(session, post_id, comments)
+                        except HikerAPIError as exc:
+                            logger.warning(
+                                "hikerapi_comment_fetch_failed",
+                                post_id=post_id,
+                                error=str(exc),
+                            )
+            except HikerAPIError as exc:
+                # Pagination died mid-flight. Everything we've persisted
+                # above stays. Surface the partial outcome below.
+                partial_failure_exc = exc
+                logger.warning(
+                    "hikerapi_pagination_interrupted",
+                    error=str(exc),
+                    posts_saved=posts_saved,
+                    posts_seen=len(seen_medias),
+                )
+
+            api_calls += max(1, (len(seen_medias) // settings.HIKERAPI_PAGE_SIZE) + 1)
+            _update_cursor_after_run(job, seen_medias, full_backfill=full_backfill)
+
+        if partial_failure_exc is not None:
+            return ScrapeResult(
+                outcome=_classify_hikerapi_error(partial_failure_exc),
+                api_calls=api_calls,
+                posts_saved=posts_saved,
+                comments_saved=comments_saved,
+                stories_saved=0,
+                error=f"{type(partial_failure_exc).__name__}: {partial_failure_exc}",
+                stats={
+                    "posts_seen": len(seen_medias),
+                    "posts_saved": posts_saved,
+                    "comments_saved": comments_saved,
+                    "skipped_by_filter": skipped,
+                    "source": "hikerapi",
+                    "partial": True,
+                },
+            )
 
         return ScrapeResult(
             outcome="success",
@@ -364,7 +427,7 @@ async def _run(
             comments_saved=comments_saved,
             stories_saved=0,
             stats={
-                "posts_seen": len(medias),
+                "posts_seen": len(seen_medias),
                 "posts_saved": posts_saved,
                 "comments_saved": comments_saved,
                 "skipped_by_filter": skipped,

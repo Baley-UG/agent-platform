@@ -22,7 +22,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from sqlalchemy import func
+from sqlalchemy import Float, cast, func, true
 from sqlmodel import Session, select
 
 from app.core.logging import logger
@@ -64,14 +64,16 @@ def _pick_candidate(
     pick_strategy: str,
     used_ids: set,
 ) -> Optional[ContentReference]:
-    base = (
-        select(ContentReference)
-        .where(
-            ContentReference.project_id == project_id,
-            ContentReference.status == "approved",
-        )
-        .where(~ContentReference.id.in_(used_ids) if used_ids else True)
+    base = select(ContentReference).where(
+        ContentReference.project_id == project_id,
+        ContentReference.status == "approved",
     )
+    # Bare Python `True` makes SQLAlchemy emit a warning + may no-op on
+    # stricter versions; use `true()` for the empty-set branch.
+    if used_ids:
+        base = base.where(~ContentReference.id.in_(used_ids))
+    else:
+        base = base.where(true())
 
     if pick_strategy == "newest":
         stmt = base.order_by(ContentReference.imported_at.desc()).limit(1)
@@ -93,11 +95,10 @@ def _pick_candidate(
         return rows[0]
     else:  # highest_score
         # The score lives in metadata_json.score (set during ig_scraper import).
-        # We sort with a JSONB cast; references missing the field land at the end.
-        from sqlalchemy import cast
-
+        # NOTE: cast to FLOAT, NOT text — text ordering puts "9" > "10".
+        # `nulls_last` keeps references missing the field at the tail.
         stmt = base.order_by(
-            cast(ContentReference.metadata_json["score"], func.text()).desc().nulls_last(),
+            cast(ContentReference.metadata_json["score"].astext, Float).desc().nulls_last(),
             ContentReference.imported_at.desc(),
         ).limit(1)
 

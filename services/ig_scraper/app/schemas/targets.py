@@ -20,7 +20,7 @@ class TargetCreate(BaseModel):
     fetch_feed: bool = True
     fetch_stories: bool = True
     fetch_highlights: bool = False
-    fetch_comments: bool = True
+    fetch_comments: bool = False
     comment_limit: int = Field(default=50, ge=0, le=500)
     min_likes: Optional[int] = Field(default=None, ge=0)
     min_impressions: Optional[int] = Field(default=None, ge=0)

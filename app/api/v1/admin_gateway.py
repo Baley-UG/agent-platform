@@ -1,8 +1,15 @@
 """Hybrid gateway — proxies admin requests to content_pipeline + ig_scraper.
 
 Admin panel calls:
-  /api/v1/cp/{path}        → CONTENT_PIPELINE_URL/api/v1/{path}
-  /api/v1/scraper/{path}   → IG_SCRAPER_URL/api/v1/{path}
+  /api/v1/cp/{path}                  → CONTENT_PIPELINE_URL/api/v1/{path}
+  /api/v1/instagram-scraper/{path}   → IG_SCRAPER_URL/api/v1/{path}
+
+Naming convention: `<platform>-<function>` for downstream proxies. The
+`-scraper` suffix is deliberate — future Instagram operations that are
+not scraping (e.g. Graph-API publishing on content_pipeline) get
+`/api/v1/instagram-publisher/...` and the two paths can coexist without
+ambiguity. TikTok scraping would similarly land at
+`/api/v1/tiktok-scraper/...`, separate from `tiktok-ads-mcp`.
 
 Auth: every request must carry a valid Bearer admin JWT. The middleware
 also enforces project-membership when a `/projects/{pid}/...` path
@@ -51,7 +58,22 @@ _HOP_BY_HOP_HEADERS = {
     "trailers",
     "upgrade",
     "expect",
+    # httpx already decodes the body before we forward it; passing
+    # `content-encoding: gzip` along with the decoded bytes corrupts
+    # the response for the browser.
+    "content-encoding",
 }
+
+# Reused across requests for connection pooling. httpx clients are
+# safe to share — they own a connection pool and a thread-safe lock.
+_HTTPX: Optional[httpx.AsyncClient] = None
+
+
+def _httpx_client() -> httpx.AsyncClient:
+    global _HTTPX
+    if _HTTPX is None or _HTTPX.is_closed:
+        _HTTPX = httpx.AsyncClient(timeout=_FORWARD_TIMEOUT)
+    return _HTTPX
 
 
 def _maybe_extract_project_id(path: str) -> Optional[UUID]:
@@ -65,6 +87,25 @@ def _maybe_extract_project_id(path: str) -> Optional[UUID]:
         return None
 
 
+# Paths that are project-agnostic AND safe to expose to any authenticated
+# user. `projects` lists projects (downstream filters server-side);
+# `global/model-routes` returns global config rows. Anything else without
+# a `projects/<uuid>/...` prefix is denied for non-admins to close the
+# IDOR that let `cp/scenarios/<id>`, `cp/render-variants/<id>` etc reach
+# any project's data.
+_GLOBAL_SAFE_PATHS: tuple[str, ...] = (
+    "projects",
+    "global/model-routes",
+)
+
+
+def _is_global_safe(path: str) -> bool:
+    p = path.lstrip("/").rstrip("/")
+    if _PROJECT_RE.match(p):
+        return False
+    return any(p == sp or p.startswith(sp + "/") for sp in _GLOBAL_SAFE_PATHS)
+
+
 def _check_project_access(principal: AdminPrincipal, project_id: UUID) -> None:
     """Project-scope enforcement at the gateway layer.
 
@@ -76,6 +117,30 @@ def _check_project_access(principal: AdminPrincipal, project_id: UUID) -> None:
     with Session(database_service.engine) as session:
         if svc.get_membership(session, principal.user.id, project_id) is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="project not found")
+
+
+def _enforce_gateway_access(principal: AdminPrincipal, path: str) -> None:
+    """Default-deny gate for the content_pipeline proxy.
+
+    Decision tree:
+      1. Admins always pass.
+      2. Path matches `projects/<uuid>/...` → check membership on that pid.
+      3. Path is in `_GLOBAL_SAFE_PATHS` → allow.
+      4. Anything else → 404 (don't leak that the resource exists).
+
+    Without this, endpoints like `/cp/scenarios/<id>` slipped through
+    project-scope checks because the previous code only enforced when
+    the path *literally* started with `projects/<uuid>/`.
+    """
+    if principal.role == "admin":
+        return
+    pid = _maybe_extract_project_id(path)
+    if pid is not None:
+        _check_project_access(principal, pid)
+        return
+    if _is_global_safe(path):
+        return
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found")
 
 
 async def _proxy(
@@ -101,13 +166,12 @@ async def _proxy(
     forward_headers["X-Forwarded-By"] = "agent-platform-gateway"
 
     try:
-        async with httpx.AsyncClient(timeout=_FORWARD_TIMEOUT) as client:
-            upstream = await client.request(
-                method=request.method,
-                url=url,
-                content=body,
-                headers=forward_headers,
-            )
+        upstream = await _httpx_client().request(
+            method=request.method,
+            url=url,
+            content=body,
+            headers=forward_headers,
+        )
     except httpx.HTTPError as exc:
         logger.warning("gateway_upstream_error", url=url, error=str(exc))
         raise HTTPException(
@@ -131,6 +195,10 @@ async def _proxy(
 @router.api_route(
     "/cp/{path:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+    # Hidden from OpenAPI — `openapi_federation` merges the downstream's
+    # actual routes under this prefix. Listing the catch-all alongside
+    # would just duplicate the menu with a generic `{path}` stub.
+    include_in_schema=False,
 )
 async def proxy_content_pipeline(
     path: str,
@@ -143,9 +211,7 @@ async def proxy_content_pipeline(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="content_pipeline service token not configured (CP_API_KEY)",
         )
-    project_id = _maybe_extract_project_id(path)
-    if project_id is not None:
-        _check_project_access(principal, project_id)
+    _enforce_gateway_access(principal, path)
     return await _proxy(
         request=request,
         base_url=settings.CONTENT_PIPELINE_URL,
@@ -154,14 +220,16 @@ async def proxy_content_pipeline(
     )
 
 
-# ---- /api/v1/scraper/{path} → ig_scraper (admin-only) ----
+# ---- /api/v1/instagram-scraper/{path} → ig_scraper service ----
 
 
 @router.api_route(
-    "/scraper/{path:path}",
+    "/instagram-scraper/{path:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+    # See cp proxy above — federation handles the visible routes.
+    include_in_schema=False,
 )
-async def proxy_ig_scraper(
+async def proxy_instagram_scraper(
     path: str,
     request: Request,
     principal: AdminPrincipal = Depends(require_admin_token),

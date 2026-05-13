@@ -99,6 +99,55 @@ class InstagramPublisher:
             await self._wait_for_finished(client, container_id)
             return await self._publish_container(client, container_id)
 
+    async def publish_carousel(
+        self,
+        *,
+        public_image_urls: list[str],
+        caption: Optional[str] = None,
+    ) -> dict:
+        """Multi-image CAROUSEL_ALBUM publish flow.
+
+        Two passes against the Graph API:
+
+        1. For each slide, create an `is_carousel_item=true` IMAGE child
+           container. Children don't need polling — they finish almost
+           instantly because no transcode is involved.
+        2. Create the parent CAROUSEL container, listing the child ids
+           via `children=<id1,id2,…>`. Poll until FINISHED.
+        3. Publish the parent container.
+
+        IG limits: 2–10 slides. We enforce 2–10 here; under 2 the caller
+        should use `publish_image` instead.
+        """
+        if not (2 <= len(public_image_urls) <= 10):
+            raise InstagramPublishError(
+                f"carousel needs 2-10 slides, got {len(public_image_urls)}"
+            )
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
+            child_ids: list[str] = []
+            for url in public_image_urls:
+                cid = await self._create_container(
+                    client,
+                    payload={
+                        "image_url": url,
+                        "is_carousel_item": "true",
+                        "access_token": self.access_token,
+                    },
+                )
+                child_ids.append(cid)
+
+            parent_id = await self._create_container(
+                client,
+                payload={
+                    "media_type": "CAROUSEL",
+                    "children": ",".join(child_ids),
+                    "caption": caption or "",
+                    "access_token": self.access_token,
+                },
+            )
+            await self._wait_for_finished(client, parent_id)
+            return await self._publish_container(client, parent_id)
+
     # ----- internal helpers -----
 
     async def _create_container(self, client: httpx.AsyncClient, *, payload: dict) -> str:

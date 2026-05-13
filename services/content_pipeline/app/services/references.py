@@ -2,19 +2,166 @@
 
 from __future__ import annotations
 
+import mimetypes
+import os
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Optional, Tuple
+from urllib.parse import urlparse
+
+import httpx
 
 from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
+from app.core import s3
+from app.core.config import settings
+from app.core.logging import logger
 from app.models.content_references import ContentReference
 from app.models.projects import Project
 from app.models.reference_usages import ReferenceUsage
-from app.schemas.references import ReferenceImportFromScraper, ReferenceManualUpload, ReferenceUpdate, UsageCheck
+from app.schemas.references import (
+    ReferenceImportFromScraper,
+    ReferenceManualUpload,
+    ReferenceRead,
+    ReferenceUpdate,
+    UsageCheck,
+)
 from app.services import scraper_bridge
+
+
+def to_read(
+    ref: ContentReference, *, session: Optional[Session] = None
+) -> ReferenceRead:
+    """Convert an ORM `ContentReference` to a `ReferenceRead` with
+    ready-to-use presigned URLs + scenario count baked in.
+
+    `session` is optional ONLY because some legacy callers (tests) build
+    a reference without DB context. When provided, we COUNT how many
+    scenarios target this reference so the panel can show a "has
+    scenario" badge without a second round trip.
+    """
+    # Default TTL keeps signing cheap (no extra S3 call) and matches
+    # the `/preview-url` endpoint's default.
+    ttl = settings.S3_PRESIGNED_URL_TTL_SECONDS
+    media_url: Optional[str] = None
+    poster_url: Optional[str] = None
+    if s3.is_configured():
+        try:
+            if ref.media_s3_key:
+                media_url = s3.presigned_get_url(ref.media_s3_key, ttl=ttl)
+            if ref.poster_s3_key:
+                poster_url = s3.presigned_get_url(ref.poster_s3_key, ttl=ttl)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("reference_presign_failed", reference_id=str(ref.id), error=str(exc))
+    # Fall back to IG CDN URLs stored in metadata at import time.
+    meta = ref.metadata_json or {}
+    if media_url is None:
+        ig_urls = meta.get("ig_media_urls") or []
+        if isinstance(ig_urls, list) and ig_urls:
+            media_url = ig_urls[0]
+    if poster_url is None:
+        poster_url = meta.get("ig_thumbnail_url") or media_url
+
+    # Scenario count — single COUNT(*) keyed on reference_id. Skip when
+    # no session was supplied (older test paths).
+    scenarios_count = 0
+    if session is not None:
+        from sqlalchemy import func
+        from app.models.scenarios import Scenario
+
+        scenarios_count = int(
+            session.exec(
+                select(func.count(Scenario.id)).where(Scenario.reference_id == ref.id)
+            ).one()
+            or 0
+        )
+
+    payload = ReferenceRead.model_validate(ref)
+    payload.media_url = media_url
+    payload.poster_url = poster_url
+    payload.scenarios_count = scenarios_count
+    return payload
+
+
+# Cap mirrored bytes per source so a malicious / oversized CDN URL can't
+# stuff our bucket. 50 MB covers 4K video posters and short reels.
+_MIRROR_MAX_BYTES = 50 * 1024 * 1024
+_MIRROR_TIMEOUT_SECONDS = 30.0
+
+
+def _filename_from_url(url: str, fallback_ext: str = ".jpg") -> str:
+    """Pull a usable filename from an IG CDN URL.
+
+    IG CDN paths look like `.../687789371_..._n.jpg?stp=...`. We strip
+    the query string, take the basename, and fall back to a UUID when
+    the URL doesn't carry one. The result is only used inside the
+    canonical S3 key (`make_key` adds its own UUID prefix) so collisions
+    don't matter much.
+    """
+    try:
+        path = urlparse(url).path
+        name = os.path.basename(path) or f"asset{fallback_ext}"
+    except Exception:  # noqa: BLE001
+        name = f"asset{fallback_ext}"
+    if "." not in name:
+        name = f"{name}{fallback_ext}"
+    return name[:100]
+
+
+def _mirror_to_s3(
+    url: str, project_id: uuid.UUID, kind: str = "references"
+) -> Optional[Tuple[str, str]]:
+    """Download `url` and stash it in our S3 bucket.
+
+    Returns `(s3_key, content_type)` on success, `None` on any error.
+    Errors are intentionally non-fatal — the reference row gets created
+    either way, and the admin panel can either re-trigger a mirror or
+    fall back to the original CDN URL stored in `metadata_json`.
+
+    IG CDN URLs carry short-lived signatures; we fetch immediately at
+    import time. If the import is delayed for hours and the URL has
+    expired, the request returns a 403 / 410 and we leave `media_s3_key`
+    null.
+    """
+    if not url:
+        return None
+    try:
+        with httpx.Client(timeout=_MIRROR_TIMEOUT_SECONDS, follow_redirects=True) as client:
+            with client.stream("GET", url) as resp:
+                if resp.status_code >= 400:
+                    logger.warning(
+                        "reference_mirror_http_error",
+                        status=resp.status_code,
+                        url=url[:120],
+                    )
+                    return None
+                content_type = resp.headers.get("content-type", "application/octet-stream").split(";")[0]
+                buf = bytearray()
+                for chunk in resp.iter_bytes():
+                    buf.extend(chunk)
+                    if len(buf) > _MIRROR_MAX_BYTES:
+                        logger.warning(
+                            "reference_mirror_too_large",
+                            url=url[:120],
+                            size_so_far=len(buf),
+                        )
+                        return None
+    except httpx.HTTPError as exc:
+        logger.warning("reference_mirror_fetch_failed", url=url[:120], error=str(exc))
+        return None
+
+    # Guess extension from content-type when the URL doesn't carry one
+    ext_from_ct = mimetypes.guess_extension(content_type) or ".bin"
+    filename = _filename_from_url(url, fallback_ext=ext_from_ct)
+    key = s3.make_key(project_id, kind, filename)
+    try:
+        s3.upload_bytes(key, bytes(buf), content_type=content_type)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("reference_mirror_upload_failed", key=key, error=str(exc))
+        return None
+    return key, content_type
 
 
 def _commit_reference(session: Session, ref: ContentReference) -> ContentReference:
@@ -81,16 +228,36 @@ def import_from_scraper(
         f"https://www.instagram.com/reel/{raw['shortcode']}/" if raw.get("shortcode") else None
     )
 
+    # Mirror the first media URL to S3 synchronously so the admin panel
+    # can show the asset right away. IG CDN URLs carry short-lived
+    # signatures — if we don't fetch within minutes the URL 403s. Errors
+    # are non-fatal: ref still gets created with media_s3_key=None and
+    # the panel falls back to `metadata.ig_media_urls`.
+    media_s3_key: Optional[str] = None
+    poster_s3_key: Optional[str] = None
+    if media_urls:
+        mirrored = _mirror_to_s3(media_urls[0], project_id, kind="references")
+        if mirrored:
+            media_s3_key = mirrored[0]
+            # If the mirrored asset itself is an image (photo posts /
+            # carousel items), use it as the poster as well so the
+            # panel has something to render even before video mirror.
+            if mirrored[1].startswith("image/"):
+                poster_s3_key = mirrored[0]
+    # Separate thumbnail when ig_scraper supplies one and we haven't
+    # already promoted the media as a poster.
+    if poster_s3_key is None and raw.get("thumbnail_url"):
+        thumb = _mirror_to_s3(raw["thumbnail_url"], project_id, kind="references")
+        if thumb:
+            poster_s3_key = thumb[0]
+
     ref = ContentReference(
         project_id=project_id,
         source_provider="instagram",
         source_external_id=str(raw["source_external_id"]),
         source_url=source_url,
-        # We don't auto-download the media here — caller can fetch lazily
-        # when the analyzer needs it. CP-M2.5/CP-M3 may add a worker that
-        # mirrors `media_urls[0]` into S3 on import.
-        media_s3_key=None,
-        poster_s3_key=None,
+        media_s3_key=media_s3_key,
+        poster_s3_key=poster_s3_key,
         caption=raw.get("caption"),
         transcript=None,
         hashtags=None,

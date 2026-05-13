@@ -110,6 +110,12 @@ class Settings(BaseSettings):
 
     # ----- S3 storage (MinIO in dev, Hetzner Object Storage in prod) -----
     S3_ENDPOINT: str = Field(default="http://minio:9000")
+    # Browser-facing host for presigned GET URLs. The internal endpoint
+    # above is what the worker uses to talk to S3 (docker DNS); this
+    # value is swapped in on the way out so the user's browser can
+    # actually fetch the URL. Dev default: MinIO host port. In prod
+    # leave unset — `S3_ENDPOINT` is already public.
+    S3_PUBLIC_ENDPOINT: Optional[str] = Field(default="http://localhost:9000")
     S3_BUCKET: str = Field(default="content-pipeline-dev")
     S3_ACCESS_KEY: str = Field(default="minioadmin")
     S3_SECRET_KEY: str = Field(default="minioadmin")

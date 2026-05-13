@@ -27,6 +27,33 @@ _ALTERS: List[Tuple[str, str]] = [
     ("user", "ALTER TABLE \"user\" ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'member'"),
     ("user", "ALTER TABLE \"user\" ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'"),
     ("user", 'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP'),
+    # Real FK on project_membership.project_id → public.projects.id with
+    # CASCADE delete. The model now declares the FK, but create_all won't
+    # retro-add a constraint to an existing table. Drop-and-recreate
+    # makes it idempotent: drop a constraint by that name if present,
+    # then add it. Wrapped in a DO block to swallow "constraint does not
+    # exist" on the first run.
+    (
+        "project_membership",
+        """
+        DO $$
+        BEGIN
+            ALTER TABLE project_membership
+                DROP CONSTRAINT IF EXISTS project_membership_project_id_fkey;
+            -- Only add the FK when public.projects exists yet (content_pipeline
+            -- migrations may not have run on a brand-new dev box).
+            IF EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema='public' AND table_name='projects'
+            ) THEN
+                ALTER TABLE project_membership
+                    ADD CONSTRAINT project_membership_project_id_fkey
+                    FOREIGN KEY (project_id) REFERENCES public.projects(id)
+                    ON DELETE CASCADE;
+            END IF;
+        END $$
+        """,
+    ),
 ]
 
 

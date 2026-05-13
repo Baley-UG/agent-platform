@@ -32,6 +32,14 @@ from app.services.database import session_scope
 from app.services.presets import PRESETS
 
 
+# Presets whose final deliverable is image-shaped (IG feed posts).
+# When the scenario's source is photo/carousel AND the target is one of
+# these, we skip ffmpeg entirely — the IG publisher will upload the
+# slides as a CAROUSEL_ALBUM directly. Reels / Story / TikTok are still
+# video targets even with a static source (slideshow path).
+_IMAGE_FRIENDLY_PRESETS = {"ig_feed_45", "ig_feed_11"}
+
+
 def _scene_video_keys_for_variant(session, scenario: Scenario, preset_key: str) -> List[str]:
     """Return the scene video S3 keys for the variant's aspect group, in scene order."""
     preset = PRESETS[preset_key]
@@ -58,6 +66,50 @@ def _scene_video_keys_for_variant(session, scenario: Scenario, preset_key: str) 
     return keys
 
 
+def _scene_image_inputs_for_variant(
+    session, scenario: Scenario, preset_key: str
+) -> tuple[List[str], List[float]]:
+    """Return (scene image S3 keys, per-scene durations) for slideshow compose.
+
+    Used when source kind is `photo` or `carousel` — we skip Seedance
+    video gen entirely and stitch the fal-generated images directly.
+    Durations come from `scenario_json.scenes[i].duration` (fallback 3s).
+    """
+    preset = PRESETS[preset_key]
+    aspect = preset.aspect
+
+    rows = session.exec(
+        select(SceneRender)
+        .where(SceneRender.scenario_id == scenario.id, SceneRender.aspect_ratio == aspect)
+        .order_by(SceneRender.scene_idx)
+    ).all()
+
+    keys: List[str] = []
+    durations: List[float] = []
+    scenes_json = (scenario.scenario_json or {}).get("scenes") or []
+    duration_by_idx: dict[int, float] = {}
+    for s in scenes_json:
+        if isinstance(s, dict):
+            try:
+                duration_by_idx[int(s.get("idx") or 0)] = float(s.get("duration") or 0)
+            except (TypeError, ValueError):
+                continue
+
+    for r in rows:
+        if r.image_asset_id is None:
+            raise renderer_svc.FFmpegError(
+                f"scene {r.scene_idx} (aspect={aspect}) has no image_asset_id; cannot compose"
+            )
+        asset = session.get(MediaAsset, r.image_asset_id)
+        if asset is None:
+            raise renderer_svc.FFmpegError(f"image asset {r.image_asset_id} not found")
+        keys.append(asset.s3_key)
+        durations.append(duration_by_idx.get(r.scene_idx, 3.0))
+    if not keys:
+        raise renderer_svc.FFmpegError(f"no scene_renders found for aspect={aspect}")
+    return keys, durations
+
+
 def _voiceover_key(session, scenario: Scenario) -> Optional[str]:
     if scenario.voiceover_asset_id is None:
         return None
@@ -70,6 +122,97 @@ def _music_key(session, scenario: Scenario) -> Optional[str]:
         return None
     track = session.get(MusicTrack, scenario.music_track_id)
     return track.audio_s3_key if track else None
+
+
+def _publish_as_carousel(*, session, scenario: Scenario, variant: RenderVariant) -> dict:
+    """No-ffmpeg path: stitch the existing scene image assets into the
+    variant's `final_asset_ids` and ledger a zero-cost compose call.
+
+    Caller already verified `source_kind ∈ {photo, carousel}` and
+    `preset_key ∈ _IMAGE_FRIENDLY_PRESETS`. We collect the scene_renders
+    for the variant's aspect_ratio (one row per slide), pull their
+    `image_asset_id`s in scene order, mark the variant ready as a
+    carousel, and return without ever invoking ffmpeg.
+    """
+    preset = PRESETS[variant.preset_key]
+    aspect = preset.aspect
+
+    rows = session.exec(
+        select(SceneRender)
+        .where(SceneRender.scenario_id == scenario.id, SceneRender.aspect_ratio == aspect)
+        .order_by(SceneRender.scene_idx)
+    ).all()
+
+    assets: List[MediaAsset] = []
+    for r in rows:
+        if r.image_asset_id is None:
+            variants_svc.mark_failed(
+                session,
+                variant,
+                f"scene {r.scene_idx} (aspect={aspect}) has no image_asset_id",
+            )
+            variants_svc.recompute_scenario_status_from_variants(session, scenario)
+            return {"ok": False, "error": "missing image asset"}
+        asset = session.get(MediaAsset, r.image_asset_id)
+        if asset is None:
+            variants_svc.mark_failed(
+                session, variant, f"image asset {r.image_asset_id} not found"
+            )
+            variants_svc.recompute_scenario_status_from_variants(session, scenario)
+            return {"ok": False, "error": "image asset not found"}
+        assets.append(asset)
+
+    if not assets:
+        variants_svc.mark_failed(
+            session, variant, f"no scene_renders for aspect={aspect}"
+        )
+        variants_svc.recompute_scenario_status_from_variants(session, scenario)
+        return {"ok": False, "error": "no scenes"}
+
+    started = time.monotonic()
+    variants_svc.mark_composing(session, variant)
+
+    recipe = {
+        "preset_key": variant.preset_key,
+        "pipeline": "carousel_no_ffmpeg",
+        "asset_count": len(assets),
+        "asset_ids": [str(a.id) for a in assets],
+    }
+    variants_svc.mark_ready_carousel(
+        session,
+        variant,
+        assets=assets,
+        thumbnail_asset=assets[0],
+        render_recipe=recipe,
+    )
+
+    latency_ms = int((time.monotonic() - started) * 1000)
+    calls_svc.record(
+        session,
+        project_id=scenario.project_id,
+        scenario_id=scenario.id,
+        variant_id=variant.id,
+        task_key="compose",
+        provider="self_ffmpeg",  # ledger taxonomy stays the same so cost-summary lines up
+        model_id="carousel_passthrough",
+        cost_usd=0.0,
+        latency_ms=latency_ms,
+        status_="success",
+    )
+
+    variants_svc.recompute_scenario_status_from_variants(session, scenario)
+
+    logger.info(
+        "carousel_compose_skipped_ffmpeg",
+        variant_id=str(variant.id),
+        asset_count=len(assets),
+    )
+    return {
+        "ok": True,
+        "variant_id": str(variant.id),
+        "pipeline": "carousel_no_ffmpeg",
+        "asset_ids": [str(a.id) for a in assets],
+    }
 
 
 def run(variant_id: str) -> dict:
@@ -86,16 +229,50 @@ def run(variant_id: str) -> dict:
             variants_svc.mark_failed(session, variant, "scenario missing")
             return {"ok": False, "error": "scenario missing"}
 
-        # Gather inputs.
+        # Gather inputs. Photo/carousel sources use the static images
+        # directly (skipping Seedance video gen); reels/videos use the
+        # per-scene Seedance mp4 outputs.
+        from app.services import scenarios as scenarios_svc
+
+        source_kind = scenarios_svc.scenario_source_kind(session, scenario)
+
+        # Shortcut: when the source is image-only (photo/carousel) AND
+        # the target preset publishes natively as an image carousel
+        # (ig_feed_*), there's no point running ffmpeg. Wire the
+        # per-scene `image_asset_id`s straight into `final_asset_ids`
+        # and let the publisher hand them to IG's CAROUSEL_ALBUM
+        # endpoint. Saves 4-7 min of zoompan compose per variant.
+        if (
+            source_kind in ("photo", "carousel")
+            and variant.preset_key in _IMAGE_FRIENDLY_PRESETS
+        ):
+            return _publish_as_carousel(
+                session=session,
+                scenario=scenario,
+                variant=variant,
+            )
+
+        scene_video_keys: List[str] = []
+        scene_image_keys: List[str] = []
+        scene_durations: List[float] = []
         try:
-            scene_keys = _scene_video_keys_for_variant(session, scenario, variant.preset_key)
+            if source_kind in ("photo", "carousel"):
+                scene_image_keys, scene_durations = _scene_image_inputs_for_variant(
+                    session, scenario, variant.preset_key
+                )
+            else:
+                scene_video_keys = _scene_video_keys_for_variant(
+                    session, scenario, variant.preset_key
+                )
         except renderer_svc.FFmpegError as exc:
             variants_svc.mark_failed(session, variant, str(exc))
             variants_svc.recompute_scenario_status_from_variants(session, scenario)
             return {"ok": False, "error": str(exc)}
 
         inputs = renderer_svc.ComposeInputs(
-            scene_video_keys=scene_keys,
+            scene_video_keys=scene_video_keys,
+            scene_image_keys=scene_image_keys,
+            scene_durations_sec=scene_durations,
             voiceover_key=_voiceover_key(session, scenario),
             music_key=_music_key(session, scenario),
         )

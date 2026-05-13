@@ -13,7 +13,6 @@ from app.api.v1 import (
     music,
     plans,
     posting_strategy,
-    projects,
     publish,
     references,
     scenarios,
@@ -23,7 +22,11 @@ from app.api.v1 import (
 
 api_router = APIRouter()
 
-api_router.include_router(projects.router)
+# NOTE: project entity CRUD (POST/GET/PATCH/DELETE /projects[/...]) lives
+# in main app at `/admin/projects` since `public.projects` is the
+# platform-wide tenant root. Sub-resource routers below still nest
+# under `/projects/{project_id}/...` because they own per-project rows
+# (brand_kits, scenarios, plan_slots, etc.).
 api_router.include_router(brand_kits.router)
 api_router.include_router(social_accounts.router)
 api_router.include_router(templates.router)

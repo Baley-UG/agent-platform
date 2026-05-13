@@ -215,6 +215,13 @@ def upgrade() -> None:
         sa.Column("video_duration", sa.Float(), nullable=True),
         sa.Column("thumbnail_url", sa.Text(), nullable=True),
         sa.Column("media_urls", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+        # S3 mirror columns — IG CDN URLs expire in 1-7 days, so we
+        # copy "important" posts (tracked authors, or manually pinned)
+        # into our bucket at scrape time. Null = not mirrored yet.
+        # See app/services/mirror.py for the policy.
+        sa.Column("media_s3_key", sa.Text(), nullable=True),
+        sa.Column("poster_s3_key", sa.Text(), nullable=True),
+        sa.Column("media_mirrored_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("location", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column("music_info", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column("audio_track_id", sa.Text(), sa.ForeignKey("ig_audio_tracks.id"), nullable=True),

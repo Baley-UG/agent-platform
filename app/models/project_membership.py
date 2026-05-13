@@ -1,14 +1,16 @@
-"""Project membership — links a user to a downstream project (content_pipeline).
+"""Project membership — links a user to a project.
 
-`project_id` is a UUID (no FK) — content_pipeline owns the project rows.
-We tolerate orphan memberships if a project is deleted there; the gateway
-reads them to gate `/api/v1/cp/projects/{pid}/...` access.
+`projects` lives in `public` (platform-wide multi-tenancy root); we hold
+a real FK on `project_id` with `ON DELETE CASCADE` so deleting a project
+removes all its memberships in one shot — no orphan rows.
 """
 
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
+import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlmodel import Field, SQLModel
 
 
@@ -22,6 +24,15 @@ class ProjectMembership(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="user.id", index=True)
-    project_id: UUID = Field(index=True)
+    # FK → public.projects.id (CASCADE on delete). content_pipeline.* tables
+    # share the same `public.projects` parent.
+    project_id: UUID = Field(
+        sa_column=sa.Column(
+            PGUUID(as_uuid=True),
+            sa.ForeignKey("public.projects.id", ondelete="CASCADE"),
+            nullable=False,
+            index=True,
+        )
+    )
     role: str = Field(default="editor")
     created_at: datetime = Field(default_factory=datetime.utcnow)

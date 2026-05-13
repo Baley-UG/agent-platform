@@ -26,6 +26,7 @@ from app.core.config import settings
 from app.core.limiter import limiter
 from app.core.logging import logger
 from app.core.metrics import setup_metrics
+from app.core.openapi_federation import install as install_openapi_federation
 from app.core.middleware import (
     LoggingContextMiddleware,
     MetricsMiddleware,
@@ -113,17 +114,42 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 
 
-# Set up CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Set up CORS middleware.
+# Wildcard "*" + credentials is rejected by browsers, so we reflect any
+# origin via regex for convenience. This is DEV-ONLY: in production the
+# wildcard is dropped and the request fails preflight if `.env` still
+# carries `"*"`. Operators must list real origins for prod.
+_cors_origins = settings.ALLOWED_ORIGINS or []
+_cors_kwargs: dict = {
+    "allow_credentials": True,
+    "allow_methods": ["*"],
+    "allow_headers": ["*"],
+}
+_env = str(settings.ENVIRONMENT).lower() if hasattr(settings, "ENVIRONMENT") else "development"
+if "*" in _cors_origins and _env != "production":
+    _cors_kwargs["allow_origin_regex"] = ".*"
+else:
+    # In production: strip the wildcard before passing to Starlette so
+    # we don't silently accept arbitrary origins.
+    _cors_kwargs["allow_origins"] = [o for o in _cors_origins if o != "*"]
+
+app.add_middleware(CORSMiddleware, **_cors_kwargs)
 
 # Include API router
 app.include_router(api_router, prefix=settings.API_V1_STR)
+
+# Federate OpenAPI from downstream services so /docs on port 8000 shows
+# the proxied `/instagram-scraper/...` and `/cp/...` endpoints with their
+# real schemas (not just a generic catch-all proxy stub).
+install_openapi_federation(
+    app,
+    downstreams=[
+        # (mount_prefix, base_url, schema_namespace)
+        ("instagram-scraper", settings.IG_SCRAPER_URL, "IGScraper_"),
+        ("cp", settings.CONTENT_PIPELINE_URL, "CP_"),
+    ],
+    api_prefix=settings.API_V1_STR,
+)
 
 
 @app.get("/")

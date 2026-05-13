@@ -19,6 +19,7 @@ from app.models.media_assets import MediaAsset
 from app.models.render_variants import RenderVariant
 from app.models.scene_renders import SceneRender
 from app.models.scenarios import Scenario
+from app.services import scenarios as scenarios_svc
 
 
 def build(session: Session, scenario: Scenario) -> dict:
@@ -64,6 +65,11 @@ def build(session: Session, scenario: Scenario) -> dict:
             "preset_key": v.preset_key,
             "status": v.status,
             "final_asset_id": str(v.final_asset_id) if v.final_asset_id else None,
+            # Multi-image carousel variants expose every slide here.
+            # Single-asset variants still echo `final_asset_id` as a
+            # 1-element list so the panel can always read from this
+            # field uniformly.
+            "final_asset_ids": [str(x) for x in (v.final_asset_ids or [])] or None,
             "thumbnail_asset_id": str(v.thumbnail_asset_id) if v.thumbnail_asset_id else None,
             "duration_sec": float(v.duration_sec) if v.duration_sec else None,
             "file_size_bytes": v.file_size_bytes,
@@ -107,6 +113,11 @@ def build(session: Session, scenario: Scenario) -> dict:
             "reference_id": str(scenario.reference_id) if scenario.reference_id else None,
             "status": scenario.status,
             "version": scenario.version,
+            # The analyzer-produced document (cta, hook, scenes, music,
+            # duration_sec, outro_template_id). Until this was included,
+            # the panel saw status=pending_review with no script content
+            # and looked like the analysis hadn't run.
+            "scenario_json": scenario.scenario_json,
             "target_variants": list(scenario.target_variants or []),
             "target_aspect_groups": list(scenario.target_aspect_groups or []),
             "quality_tier": scenario.quality_tier,
@@ -136,4 +147,8 @@ def build(session: Session, scenario: Scenario) -> dict:
             "success_calls": int(success_calls or 0),
             "failed_calls": int(failed_calls or 0),
         },
+        # Action matrix — which start_* buttons the panel should show.
+        # See `scenarios_svc.pipeline_actions` for the truth table; in
+        # short, photo/carousel sources skip video + audio steps.
+        "actions": scenarios_svc.pipeline_actions(session, scenario),
     }

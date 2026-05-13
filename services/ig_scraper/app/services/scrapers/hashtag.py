@@ -66,7 +66,7 @@ async def _run(
 
     params = job.params or {}
     max_posts = min(int(params.get("max_posts", 100)), settings.IG_MAX_POSTS_PER_JOB)
-    auto_enrich = bool(params.get("auto_enrich_users", True))
+    auto_enrich = bool(params.get("auto_enrich_users", False))
     min_followers = int(
         params.get("min_followers_for_enrich", settings.IG_MIN_FOLLOWERS_FOR_ENRICH)
     )

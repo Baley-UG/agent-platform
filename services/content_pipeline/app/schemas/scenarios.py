@@ -12,10 +12,16 @@ QualityTier = Literal["draft", "final"]
 
 
 class ScenarioCreate(BaseModel):
-    """Spawn a scenario from a reference. The analyzer worker fills scenario_json."""
+    """Spawn a scenario from a reference. The analyzer worker fills scenario_json.
+
+    `target_variants` is optional — when omitted, the service derives a
+    sensible default from the reference's source kind (e.g. an IG reel
+    → `ig_reels`, a feed photo → `ig_feed_45`). Admins can still pass
+    an explicit list to override.
+    """
 
     reference_id: uuid.UUID
-    target_variants: List[str] = Field(default_factory=lambda: ["ig_reels"])
+    target_variants: Optional[List[str]] = None
     quality_tier: QualityTier = "final"
     # Reuse policy bypass — required when the reference has been used before
     # in projects with reuse_policy='warn'. Ignored when policy='block' (always denied)

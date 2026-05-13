@@ -9,6 +9,7 @@ from typing import List, Optional
 from fastapi import HTTPException, status
 from sqlmodel import Session, select
 
+from app.core.logging import logger
 from app.models.plan_slots import PlanSlot
 from app.models.projects import Project
 from app.models.weekly_plans import WeeklyPlan
@@ -95,16 +96,29 @@ def generate(
         for s in session.exec(select(PlanSlot).where(PlanSlot.weekly_plan_id == plan.id)).all()
     }
 
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    # Resolve the project's timezone ONCE so we fail loudly on a bad
+    # value instead of silently skipping every blackout check.
+    try:
+        tz = ZoneInfo(strategy.timezone)
+    except ZoneInfoNotFoundError:
+        logger.warning(
+            "weekly_plan_unknown_timezone",
+            project_id=str(project.id),
+            timezone=strategy.timezone,
+            note="blackout windows ignored; admin must fix posting_strategy.timezone",
+        )
+        tz = None
+
     inserted = 0
     for scheduled_at, preset, content_type in expanded:
-        # Apply blackout (skip silently — admin can edit later if needed).
-        try:
-            from zoneinfo import ZoneInfo
-
-            if planner.is_in_blackout(scheduled_at, strategy.blackout, ZoneInfo(strategy.timezone)):
-                continue
-        except Exception:  # noqa: BLE001
-            pass
+        # Apply blackout. We only skip the check when timezone is bad
+        # (logged above); any OTHER error here is a real bug and must
+        # surface — silently letting slots through would post during
+        # the user's declared quiet hours.
+        if tz is not None and planner.is_in_blackout(scheduled_at, strategy.blackout, tz):
+            continue
 
         if (scheduled_at, preset) in existing_keys:
             continue
@@ -182,10 +196,28 @@ def get_slot(session: Session, project_id: uuid.UUID, slot_id: uuid.UUID) -> Pla
 
 
 def update_slot(session: Session, slot: PlanSlot, patch: dict) -> PlanSlot:
-    """Drag-drop / variant assign / skip — admin-edit a slot."""
-    allowed = {"scheduled_at", "social_account_id", "variant_id", "reference_id", "status", "content_type", "variant_preset"}
+    """Drag-drop / variant assign / skip / caption edit — admin-edit a slot.
+
+    `caption_override` and `hashtags_override` are nullable: an explicit
+    `null` clears the override (publisher then falls back to
+    `scenario.default_caption` / `default_hashtags`). The other allowed
+    fields ignore `None` so a partial PATCH doesn't wipe them.
+    """
+    allowed_required = {
+        "scheduled_at",
+        "social_account_id",
+        "variant_id",
+        "reference_id",
+        "status",
+        "content_type",
+        "variant_preset",
+    }
+    # `None` here means "clear the override" rather than "skip the field".
+    allowed_nullable = {"caption_override", "hashtags_override"}
     for key, value in patch.items():
-        if key in allowed and value is not None:
+        if key in allowed_required and value is not None:
+            setattr(slot, key, value)
+        elif key in allowed_nullable:
             setattr(slot, key, value)
     if patch.get("variant_id") is not None:
         slot.source_kind = "stock"

@@ -10,10 +10,11 @@ from __future__ import annotations
 import uuid
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Response, status
 from sqlmodel import Session
 
 from app.api.v1.deps import get_project, get_session, require_api_key
+from app.core.logging import logger
 from app.models.projects import Project
 from app.schemas.render_variants import (
     RegenerateVoiceoverRequest,
@@ -52,7 +53,11 @@ def _enqueue_image_gen(scene_render_id: uuid.UUID, prompt_override: Optional[str
             "image_gen", "app.workers.image_gen.run", str(scene_render_id), prompt_override
         )
         return job.id
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        # Don't 500 — admin panel will see `*_job_id=None` and the
+        # downstream worker won't have run. But DO log so the cause
+        # (Redis down, queue config mismatch, etc.) isn't invisible.
+        logger.exception("enqueue_failed", error=str(exc))
         return None
 
 
@@ -62,7 +67,11 @@ def _enqueue_video_gen(scene_render_id: uuid.UUID, motion_override: Optional[str
             "video_gen", "app.workers.video_gen.run", str(scene_render_id), motion_override
         )
         return job.id
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        # Don't 500 — admin panel will see `*_job_id=None` and the
+        # downstream worker won't have run. But DO log so the cause
+        # (Redis down, queue config mismatch, etc.) isn't invisible.
+        logger.exception("enqueue_failed", error=str(exc))
         return None
 
 
@@ -80,7 +89,11 @@ def _enqueue_audio_gen(
             text_override,
         )
         return job.id
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        # Don't 500 — admin panel will see `*_job_id=None` and the
+        # downstream worker won't have run. But DO log so the cause
+        # (Redis down, queue config mismatch, etc.) isn't invisible.
+        logger.exception("enqueue_failed", error=str(exc))
         return None
 
 
@@ -88,7 +101,11 @@ def _enqueue_render(variant_id: uuid.UUID) -> Optional[str]:
     try:
         job = queue.enqueue("media_render", "app.workers.render.run", str(variant_id))
         return job.id
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        # Don't 500 — admin panel will see `*_job_id=None` and the
+        # downstream worker won't have run. But DO log so the cause
+        # (Redis down, queue config mismatch, etc.) isn't invisible.
+        logger.exception("enqueue_failed", error=str(exc))
         return None
 
 
@@ -381,10 +398,20 @@ def start_compose(
     """Materialize render_variants and enqueue compose jobs for each."""
     scenario = svc.start_compose(session, project.id, scenario_id)
     variants_svc.materialize_for_scenario(session, scenario)
+    enqueued = 0
     for variant in variants_svc.list_for_scenario(session, scenario.id):
         if variant.status in ("pending", "failed"):
             variants_svc.mark_composing(session, variant)
             _enqueue_render(variant.id)
+            enqueued += 1
+    # If every variant was already `ready`/`approved` (re-entering compose
+    # from final_pending_review or approved_final with no actual work to
+    # do) the rollup below advances the scenario back out of `composing`
+    # immediately, otherwise it would stay stuck — there's no worker
+    # job to fire the rollup later.
+    if enqueued == 0:
+        variants_svc.recompute_scenario_status_from_variants(session, scenario)
+        session.refresh(scenario)
     return ScenarioRead.model_validate(scenario)
 
 
@@ -450,9 +477,24 @@ def approve_final_scenario(
     return ScenarioRead.model_validate(svc.approve_final(session, project.id, scenario_id))
 
 
+# Scenarios that change state autonomously (a worker will flip them) →
+# panel should poll fast. Anything else is admin-action-gated and panel
+# can back off until the user clicks something.
+_LIVE_STATUSES = frozenset({
+    "analyzing",
+    "generating_images",
+    "generating_videos",
+    "generating_audio",
+    "composing",
+})
+_LIVE_POLL_SECONDS = 3
+_IDLE_POLL_SECONDS = 60
+
+
 @router.get("/{scenario_id}/progress")
 def get_progress(
     scenario_id: uuid.UUID,
+    response: Response,
     project: Project = Depends(get_project),
     session: Session = Depends(get_session),
 ) -> dict:
@@ -461,6 +503,19 @@ def get_progress(
     One GET returns the scenario row, scene_renders grouped by scene_idx,
     render_variants, voiceover summary, progress counters, and per-scenario
     cost summary. Use this instead of polling four endpoints separately.
+
+    The response includes an `X-Poll-Interval-Seconds` header so the
+    panel can adapt its refresh cadence:
+      - 3s while a worker is mutating the scenario (analyzing, etc.)
+      - 60s when waiting on an admin action (pending_review, approved, ...)
     """
     scenario = svc.get(session, project.id, scenario_id)
-    return progress_svc.build(session, scenario)
+    payload = progress_svc.build(session, scenario)
+
+    poll = _LIVE_POLL_SECONDS if scenario.status in _LIVE_STATUSES else _IDLE_POLL_SECONDS
+    response.headers["X-Poll-Interval-Seconds"] = str(poll)
+    # Inline into the JSON too so panels that can't read response headers
+    # (cross-origin without explicit expose) still get the hint.
+    payload["poll_interval_seconds"] = poll
+    payload["is_live"] = scenario.status in _LIVE_STATUSES
+    return payload

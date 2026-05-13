@@ -29,7 +29,7 @@ def upgrade() -> None:
         sa.Column(
             "project_id",
             postgresql.UUID(as_uuid=True),
-            sa.ForeignKey(f"{SCHEMA}.projects.id", ondelete="CASCADE"),
+            sa.ForeignKey("public.projects.id", ondelete="CASCADE"),
             nullable=False,
         ),
         sa.Column("name", sa.String(255), nullable=False),
@@ -57,7 +57,7 @@ def upgrade() -> None:
         sa.Column(
             "project_id",
             postgresql.UUID(as_uuid=True),
-            sa.ForeignKey(f"{SCHEMA}.projects.id", ondelete="CASCADE"),
+            sa.ForeignKey("public.projects.id", ondelete="CASCADE"),
             nullable=False,
         ),
         sa.Column(
@@ -92,7 +92,7 @@ def upgrade() -> None:
         sa.Column(
             "project_id",
             postgresql.UUID(as_uuid=True),
-            sa.ForeignKey(f"{SCHEMA}.projects.id", ondelete="CASCADE"),
+            sa.ForeignKey("public.projects.id", ondelete="CASCADE"),
             nullable=False,
         ),
         sa.Column(

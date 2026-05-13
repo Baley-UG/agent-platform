@@ -248,7 +248,7 @@ def _build_job(target: ScanTarget, job_type: str) -> ScrapeJob:
         params={
             "fetch_comments": target.fetch_comments,
             "comment_limit": target.comment_limit,
-            "auto_enrich_users": True,
+            "auto_enrich_users": False,
         },
         min_likes=target.min_likes,
         min_impressions=target.min_impressions,

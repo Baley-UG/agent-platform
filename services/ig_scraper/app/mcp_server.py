@@ -198,7 +198,7 @@ def _build_server():
         interval_hours: int = 24,
         fetch_stories: bool = True,
         fetch_highlights: bool = False,
-        fetch_comments: bool = True,
+        fetch_comments: bool = False,
         comment_limit: int = 50,
         min_likes: Optional[int] = None,
         min_impressions: Optional[int] = None,
@@ -233,7 +233,7 @@ def _build_server():
     def enqueue_user_scan(
         username: str,
         full_backfill: bool = False,
-        fetch_comments: bool = True,
+        fetch_comments: bool = False,
         comment_limit: int = 50,
         min_likes: Optional[int] = None,
         min_impressions: Optional[int] = None,
@@ -259,7 +259,7 @@ def _build_server():
     def enqueue_hashtag_scan(
         hashtag: str,
         section: str = "top",
-        auto_enrich_users: bool = True,
+        auto_enrich_users: bool = False,
         min_likes: Optional[int] = None,
         min_impressions: Optional[int] = None,
         max_posts: int = 100,

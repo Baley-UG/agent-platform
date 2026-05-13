@@ -54,8 +54,15 @@ def search_posts(
             SELECT
                 p.id, p.code, p.media_type, p.product_type, p.taken_at,
                 p.like_count, p.comment_count, p.play_count, p.view_count,
-                p.caption, p.thumbnail_url, p.score,
-                u.username AS author_username
+                p.caption, p.caption_length, p.language,
+                p.hashtags, p.mentions,
+                p.thumbnail_url, p.media_urls, p.video_duration,
+                p.score,
+                u.username AS author_username,
+                u.full_name AS author_full_name,
+                u.is_verified AS author_is_verified,
+                u.follower_count AS author_follower_count,
+                u.profile_pic_url AS author_profile_pic_url
             FROM ig_posts p
             JOIN ig_users u ON u.id = p.author_id
             {where_sql}
@@ -112,6 +119,125 @@ def get_user_top_posts(
     return [dict(r) for r in rows]
 
 
+def list_ig_users(
+    session: Session,
+    *,
+    search: Optional[str] = None,
+    min_followers: Optional[int] = None,
+    is_business: Optional[bool] = None,
+    is_verified: Optional[bool] = None,
+    is_private: Optional[bool] = None,
+    order: str = "follower_count_desc",
+    limit: int = 50,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    """Filterable list of scraped Instagram profiles (`ig_users`).
+
+    `search` is a case-insensitive substring match over `username` and
+    `full_name`. Sort options pin to whitelisted SQL columns so the
+    param can never escape into a free-form ORDER BY.
+    """
+    where: List[str] = []
+    params: Dict[str, Any] = {
+        "limit": int(min(max(limit, 1), 500)),
+        "offset": int(max(offset, 0)),
+    }
+    if search:
+        where.append("(username ILIKE :search OR full_name ILIKE :search)")
+        params["search"] = f"%{search.strip().lstrip('@')}%"
+    if min_followers is not None:
+        where.append("COALESCE(follower_count, 0) >= :min_followers")
+        params["min_followers"] = int(min_followers)
+    if is_business is not None:
+        where.append("is_business = :is_business")
+        params["is_business"] = bool(is_business)
+    if is_verified is not None:
+        where.append("is_verified = :is_verified")
+        params["is_verified"] = bool(is_verified)
+    if is_private is not None:
+        where.append("is_private = :is_private")
+        params["is_private"] = bool(is_private)
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+    order_col = {
+        "follower_count_desc": "COALESCE(follower_count, 0) DESC",
+        "media_count_desc": "COALESCE(media_count, 0) DESC",
+        "last_seen_desc": "last_seen_at DESC",
+        "first_seen_desc": "first_seen_at DESC",
+        "username_asc": "username ASC",
+    }.get(order, "COALESCE(follower_count, 0) DESC")
+
+    rows = session.execute(
+        text(
+            f"""
+            SELECT id, username, full_name, biography, follower_count,
+                   following_count, media_count, is_business, is_verified,
+                   is_private, profile_pic_url, first_seen_at, last_seen_at
+            FROM ig_users
+            {where_sql}
+            ORDER BY {order_col}
+            LIMIT :limit OFFSET :offset
+            """
+        ),
+        params,
+    ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def get_ig_user_detail(session: Session, username: str) -> Optional[Dict[str, Any]]:
+    """Full profile (incl. raw HikerAPI payload) + aggregate stats from `ig_posts`.
+
+    Returns None when the user isn't in `ig_users`. The `stats` block is
+    always present (zero-filled if we haven't scraped any of their posts).
+    """
+    profile = session.execute(
+        text(
+            """
+            SELECT id, username, full_name, biography, follower_count,
+                   following_count, media_count, is_business, is_verified,
+                   is_private, profile_pic_url, raw,
+                   first_seen_at, last_seen_at
+            FROM ig_users
+            WHERE username = :username
+            """
+        ),
+        {"username": username.lower().lstrip("@")},
+    ).mappings().first()
+    if profile is None:
+        return None
+
+    stats_row = session.execute(
+        text(
+            """
+            SELECT
+                COUNT(*)                        AS posts_in_db,
+                AVG(NULLIF(like_count, 0))      AS avg_likes,
+                AVG(NULLIF(play_count, 0))      AS avg_play_count,
+                AVG(score)                      AS avg_score,
+                MAX(score)                      AS max_score,
+                MAX(taken_at)                   AS last_post_at
+            FROM ig_posts
+            WHERE author_id = :author_id
+            """
+        ),
+        {"author_id": profile["id"]},
+    ).mappings().first()
+
+    return {
+        **dict(profile),
+        "stats": {
+            "posts_in_db": int(stats_row["posts_in_db"] or 0),
+            "avg_likes": float(stats_row["avg_likes"]) if stats_row["avg_likes"] is not None else None,
+            "avg_play_count": (
+                float(stats_row["avg_play_count"]) if stats_row["avg_play_count"] is not None else None
+            ),
+            "avg_score": float(stats_row["avg_score"]) if stats_row["avg_score"] is not None else None,
+            "max_score": float(stats_row["max_score"]) if stats_row["max_score"] is not None else None,
+            "last_post_at": stats_row["last_post_at"],
+        },
+    }
+
+
 def get_user_profile(session: Session, username: str) -> Optional[Dict[str, Any]]:
     """Last known profile snapshot. Returns None if we've never seen them."""
     row = session.execute(
@@ -127,6 +253,58 @@ def get_user_profile(session: Session, username: str) -> Optional[Dict[str, Any]
         {"username": username.lower().lstrip("@")},
     ).mappings().first()
     return dict(row) if row else None
+
+
+def get_post_detail(
+    session: Session, post_id: int, *, include_comments: int = 0
+) -> Optional[Dict[str, Any]]:
+    """Full single-post view: every column on `ig_posts`, the author's
+    profile, the post's hashtags + mentions arrays, and optionally the
+    top `include_comments` comments.
+
+    Returns None when the post isn't in our DB. Heavy `raw` column is
+    included intentionally — the detail view is for cases where the
+    caller wants everything (AI pipeline, admin inspector). For lighter
+    list shapes use `search_posts`.
+    """
+    row = session.execute(
+        text(
+            """
+            SELECT
+                p.id, p.code, p.media_type, p.product_type, p.taken_at,
+                p.like_count, p.comment_count, p.play_count, p.view_count, p.save_count,
+                p.video_duration, p.caption, p.caption_length,
+                p.hashtags, p.mentions, p.language,
+                p.emoji_count, p.hashtag_count, p.mention_count,
+                p.has_question, p.has_cta, p.caption_simhash,
+                p.thumbnail_url, p.media_urls, p.location, p.music_info,
+                p.audio_track_id, p.score, p.score_components, p.score_computed_at,
+                p.first_seen_at, p.last_seen_at, p.discovered_via_job_id,
+                p.raw,
+                u.id          AS author_id,
+                u.username    AS author_username,
+                u.full_name   AS author_full_name,
+                u.biography   AS author_biography,
+                u.follower_count, u.following_count, u.media_count,
+                u.is_business, u.is_verified, u.is_private,
+                u.profile_pic_url
+            FROM ig_posts p
+            JOIN ig_users u ON u.id = p.author_id
+            WHERE p.id = :post_id
+            LIMIT 1
+            """
+        ),
+        {"post_id": int(post_id)},
+    ).mappings().first()
+    if row is None:
+        return None
+    result = dict(row)
+
+    if include_comments > 0:
+        result["comments"] = get_post_comments(session, int(post_id), limit=include_comments)
+    else:
+        result["comments"] = []
+    return result
 
 
 def get_post_comments(

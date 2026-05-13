@@ -309,7 +309,9 @@ def update_post_score(session: Session, post_id: int) -> Optional[ScoreResult]:
             },
         )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("webhook_enqueue_failed", post_id=post_id, error=str(exc))
+        # logger.exception captures the full traceback (vs just str(exc)),
+        # so misconfigured webhooks surface with enough context to debug.
+        logger.exception("webhook_enqueue_failed", post_id=post_id, error=str(exc))
 
     return result
 

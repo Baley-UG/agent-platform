@@ -81,9 +81,24 @@ def run(plan_slot_id: str, force_now: bool = False) -> dict:  # noqa: ARG001
             session.flush()
             return {"ok": False, "error": "variant or final asset missing"}
 
-        asset = session.get(MediaAsset, variant.final_asset_id)
-        if asset is None:
-            return {"ok": False, "error": "final media_asset missing"}
+        # Resolve the asset list. Multi-image carousels populate
+        # `final_asset_ids` (2-10 entries); single-asset variants either
+        # leave it null or store a 1-element list. We treat anything
+        # with >1 entry as a carousel publish.
+        asset_id_strs: list[str] = []
+        if variant.final_asset_ids:
+            asset_id_strs = [str(x) for x in variant.final_asset_ids if x]
+        if not asset_id_strs:
+            asset_id_strs = [str(variant.final_asset_id)]
+
+        assets: list[MediaAsset] = []
+        for aid in asset_id_strs:
+            a = session.get(MediaAsset, uuid.UUID(aid))
+            if a is None:
+                return {"ok": False, "error": f"media_asset {aid} missing"}
+            assets.append(a)
+        # Backwards-compatible alias for the single-asset branch below.
+        asset = assets[0]
 
         # Reuse an existing pending job if one is already attached (retry path),
         # otherwise create a new one.
@@ -126,13 +141,34 @@ def run(plan_slot_id: str, force_now: bool = False) -> dict:  # noqa: ARG001
 
         try:
             if account.provider == "instagram":
-                response = asyncio.run(
-                    publisher.publish_video(
-                        public_video_url=public_url,
-                        caption=caption_text,
-                        media_type=variant_to_ig_media_type(slot.variant_preset),
+                # Carousel (multi-image) path: fan out one container per
+                # slide via `publish_carousel`. Single image — including
+                # a 1-slide carousel — falls back to `publish_image`.
+                # Video path stays unchanged (single mp4).
+                is_image_asset = (asset.mime_type or "").startswith("image/")
+                if is_image_asset and len(assets) >= 2:
+                    public_urls = [_public_url_for_asset(a) for a in assets]
+                    response = asyncio.run(
+                        publisher.publish_carousel(
+                            public_image_urls=public_urls,
+                            caption=caption_text,
+                        )
                     )
-                )
+                elif is_image_asset:
+                    response = asyncio.run(
+                        publisher.publish_image(
+                            public_image_url=public_url,
+                            caption=caption_text,
+                        )
+                    )
+                else:
+                    response = asyncio.run(
+                        publisher.publish_video(
+                            public_video_url=public_url,
+                            caption=caption_text,
+                            media_type=variant_to_ig_media_type(slot.variant_preset),
+                        )
+                    )
             elif account.provider == "tiktok":
                 response = asyncio.run(
                     publisher.publish_video(

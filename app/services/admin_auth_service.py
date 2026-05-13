@@ -105,6 +105,13 @@ def change_password(session: Session, user: User, current: str, new: str) -> Use
 # ---------- login / refresh / logout ----------
 
 
+# Pre-computed bcrypt hash of an unlikely password; verifying the
+# submitted password against this gives the same CPU cost as a real
+# verify(), so attackers can't distinguish "user exists" from "user
+# doesn't exist" by response latency. Generated once at import.
+_DUMMY_PASSWORD_HASH = User.hash_password("not-a-real-password-7c3a")
+
+
 def login(
     session: Session,
     *,
@@ -115,6 +122,9 @@ def login(
 ) -> Tuple[User, str, str, datetime]:
     user = get_user_by_email(session, email)
     if user is None:
+        # Burn the same bcrypt cycles we'd spend on a real verify so the
+        # unknown-email branch isn't a timing oracle. Result discarded.
+        User.verify_password_against_hash(password, _DUMMY_PASSWORD_HASH)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid credentials")
     if user.status != "active":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="account disabled")

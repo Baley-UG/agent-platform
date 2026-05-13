@@ -65,6 +65,16 @@ class RenderVariant(SQLModel, table=True):
             nullable=True,
         ),
     )
+    # Multi-asset slot for variants that publish as IG / TT carousels
+    # (multiple images, no single mp4). When set, this is the canonical
+    # list and `final_asset_id` mirrors `final_asset_ids[0]` for legacy
+    # readers / IG single-photo fallbacks. JSONB array of media_assets.id
+    # strings (we keep the elements as strings rather than uuid[] because
+    # Pydantic's JSONB roundtrip is simpler with string elements).
+    final_asset_ids: Optional[list[str]] = Field(
+        default=None,
+        sa_column=sa.Column(JSONB, nullable=True),
+    )
     thumbnail_asset_id: Optional[uuid.UUID] = Field(
         default=None,
         sa_column=sa.Column(

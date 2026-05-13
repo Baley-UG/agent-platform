@@ -39,7 +39,10 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.UniqueConstraint("slug", name="uq_projects_slug"),
-        schema=SCHEMA,
+        # `projects` lives in `public` (platform-wide multi-tenancy root).
+        # Other content_pipeline.* tables FK to public.projects.id via
+        # cross-schema reference.
+        schema="public",
     )
 
     # ------------------------------------------------------------------
@@ -51,7 +54,7 @@ def upgrade() -> None:
         sa.Column(
             "project_id",
             postgresql.UUID(as_uuid=True),
-            sa.ForeignKey(f"{SCHEMA}.projects.id", ondelete="CASCADE"),
+            sa.ForeignKey("public.projects.id", ondelete="CASCADE"),
             nullable=False,
         ),
         sa.Column("name", sa.String(255), nullable=False),
@@ -79,7 +82,7 @@ def upgrade() -> None:
         sa.Column(
             "project_id",
             postgresql.UUID(as_uuid=True),
-            sa.ForeignKey(f"{SCHEMA}.projects.id", ondelete="CASCADE"),
+            sa.ForeignKey("public.projects.id", ondelete="CASCADE"),
             nullable=False,
         ),
         sa.Column("provider", sa.String(32), nullable=False),
@@ -106,7 +109,7 @@ def upgrade() -> None:
         sa.Column(
             "project_id",
             postgresql.UUID(as_uuid=True),
-            sa.ForeignKey(f"{SCHEMA}.projects.id", ondelete="CASCADE"),
+            sa.ForeignKey("public.projects.id", ondelete="CASCADE"),
             nullable=False,
         ),
         sa.Column("source_provider", sa.String(32), nullable=False),
@@ -151,7 +154,7 @@ def upgrade() -> None:
         sa.Column(
             "project_id",
             postgresql.UUID(as_uuid=True),
-            sa.ForeignKey(f"{SCHEMA}.projects.id", ondelete="CASCADE"),
+            sa.ForeignKey("public.projects.id", ondelete="CASCADE"),
             nullable=False,
         ),
         sa.Column("name", sa.String(255), nullable=False),
@@ -174,7 +177,7 @@ def upgrade() -> None:
         sa.Column(
             "project_id",
             postgresql.UUID(as_uuid=True),
-            sa.ForeignKey(f"{SCHEMA}.projects.id", ondelete="CASCADE"),
+            sa.ForeignKey("public.projects.id", ondelete="CASCADE"),
             nullable=False,
         ),
         sa.Column("name", sa.String(255), nullable=False),
@@ -199,7 +202,7 @@ def upgrade() -> None:
         sa.Column(
             "project_id",
             postgresql.UUID(as_uuid=True),
-            sa.ForeignKey(f"{SCHEMA}.projects.id", ondelete="CASCADE"),
+            sa.ForeignKey("public.projects.id", ondelete="CASCADE"),
             nullable=False,
         ),
         sa.Column("type", sa.String(32), nullable=False),
@@ -232,7 +235,7 @@ def upgrade() -> None:
         sa.Column(
             "project_id",
             postgresql.UUID(as_uuid=True),
-            sa.ForeignKey(f"{SCHEMA}.projects.id", ondelete="CASCADE"),
+            sa.ForeignKey("public.projects.id", ondelete="CASCADE"),
             nullable=True,
         ),
         sa.Column("task_key", sa.String(64), nullable=False),
@@ -271,7 +274,7 @@ def upgrade() -> None:
         sa.Column(
             "project_id",
             postgresql.UUID(as_uuid=True),
-            sa.ForeignKey(f"{SCHEMA}.projects.id", ondelete="CASCADE"),
+            sa.ForeignKey("public.projects.id", ondelete="CASCADE"),
             nullable=False,
         ),
         sa.Column("scenario_id", postgresql.UUID(as_uuid=True), nullable=True),
@@ -320,7 +323,8 @@ def downgrade() -> None:
         "content_references",
         "social_accounts",
         "brand_kits",
-        "projects",
     ):
         op.execute(f'DROP TABLE IF EXISTS "{SCHEMA}".{table} CASCADE')
+    # `projects` lives in `public`, not `content_pipeline`.
+    op.execute('DROP TABLE IF EXISTS public.projects CASCADE')
     op.execute(f'DROP SCHEMA IF EXISTS "{SCHEMA}" CASCADE')

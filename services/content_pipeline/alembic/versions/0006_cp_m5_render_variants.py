@@ -76,6 +76,11 @@ def upgrade() -> None:
             sa.ForeignKey(f"{SCHEMA}.media_assets.id", ondelete="SET NULL"),
             nullable=True,
         ),
+        # Multi-asset slot for variants that publish as IG / TT carousels
+        # (multiple images, no single mp4). When NULL the variant has a
+        # single `final_asset_id` (legacy video / single-photo). When set,
+        # this list is authoritative and `final_asset_id` mirrors index 0.
+        sa.Column("final_asset_ids", postgresql.JSONB, nullable=True),
         sa.Column("render_recipe", postgresql.JSONB, nullable=True),
         sa.Column("duration_sec", sa.Numeric(8, 3), nullable=True),
         sa.Column("file_size_bytes", sa.BigInteger, nullable=True),

@@ -44,41 +44,107 @@ def _normalise_hashtag(value: str) -> str:
     return value.lstrip("#").strip().lower()
 
 
-async def _walk_hashtag_medias(
+def _extract_medias_from_sections(response: dict) -> list:
+    """Walk Instagram-style `response.sections[].layout_content.medias[].media`.
+
+    HikerAPI mirrors Instagram's hashtag GraphQL output verbatim, which
+    is a list of layout sections rather than a flat media array. Each
+    section may carry medias in different sub-fields depending on the
+    layout type (`media_grid` uses `layout_content.medias`, others may
+    use `layout_content.one_by_two_item.clips.items`, etc.). We
+    enumerate the known nesting paths and yield the inner `media`
+    dicts.
+    """
+    out: list = []
+    sections = response.get("sections") if isinstance(response, dict) else None
+    if not isinstance(sections, list):
+        return out
+    for sec in sections:
+        if not isinstance(sec, dict):
+            continue
+        content = sec.get("layout_content") or {}
+        if not isinstance(content, dict):
+            continue
+        # Path 1: layout_content.medias[].media  (most common — `media_grid`)
+        medias = content.get("medias")
+        if isinstance(medias, list):
+            for wrap in medias:
+                if isinstance(wrap, dict):
+                    m = wrap.get("media") if "media" in wrap else wrap
+                    if isinstance(m, dict):
+                        out.append(m)
+        # Path 2: layout_content.one_by_two_item.clips.items[].media
+        clips_block = content.get("one_by_two_item", {}).get("clips", {}).get("items")
+        if isinstance(clips_block, list):
+            for wrap in clips_block:
+                if isinstance(wrap, dict):
+                    m = wrap.get("media") if "media" in wrap else wrap
+                    if isinstance(m, dict):
+                        out.append(m)
+        # Path 3: layout_content.fill_items[].media (occasional grid filler)
+        fillers = content.get("fill_items")
+        if isinstance(fillers, list):
+            for wrap in fillers:
+                if isinstance(wrap, dict):
+                    m = wrap.get("media") if "media" in wrap else wrap
+                    if isinstance(m, dict):
+                        out.append(m)
+    return out
+
+
+async def _iter_hashtag_medias(
     client: HikerAPIClient,
     *,
     section: str,
     name: str,
     max_items: int,
-) -> List[Dict[str, Any]]:
-    """Fetch paginated hashtag medias.
+):
+    """Yield each normalised hashtag media as it arrives.
 
-    HikerAPI v2 only exposes `/v2/hashtag/medias/top` — no `/recent`
-    sibling, no `/chunk` suffix. The endpoint itself returns a
-    paginated payload; `paginate_chunks` walks `end_cursor` if it's
-    present, otherwise stops after the first page.
+    Streaming iterator so a mid-flight 402/429 leaves everything-so-far
+    persisted by the caller. Pagination uses the `page_id` query param
+    (NOT `end_cursor`, which is what paginate_chunks defaults to), and
+    the cursor in the response is `next_page_id`. The items themselves
+    are not a flat list — they live in
+    `response.sections[].layout_content.medias[].media`, so we extract
+    them via `_extract_medias_from_sections`.
 
-    `section` is kept for caller compatibility but only `top` is
-    actually supported by HikerAPI; `recent` falls back to `top` with
-    a warning.
+    Both `top` and `recent` sections are real HikerAPI endpoints. Unknown
+    section names fall back to `top`.
     """
-    if section != "top":
+    if section not in ("top", "recent"):
         logger.warning(
-            "hikerapi_hashtag_recent_unsupported",
+            "hikerapi_hashtag_unknown_section",
             section=section,
             name=name,
-            note="HikerAPI v2 only exposes /v2/hashtag/medias/top; falling back to top.",
+            note="expected 'top' or 'recent' — falling back to top.",
         )
-    path = "/v2/hashtag/medias/top"
-    medias: List[Dict[str, Any]] = []
-    async for media in client.paginate_chunks(
-        path,
-        items_key="response",
-        max_items=max_items,
-        name=name,
-    ):
-        medias.append(_normalise_media(media))
-    return medias
+        section = "top"
+    path = f"/v2/hashtag/medias/{section}"
+
+    page_id: Optional[str] = None
+    yielded = 0
+    while True:
+        params = {"name": name}
+        if page_id:
+            params["page_id"] = page_id
+        page = await client.get(path, **params)
+        if not isinstance(page, dict):
+            return
+        response = page.get("response") or {}
+        medias = _extract_medias_from_sections(response)
+        for media in medias:
+            yield _normalise_media(media)
+            yielded += 1
+            if yielded >= max_items:
+                return
+        page_id = page.get("next_page_id")
+        # `more_available` can confirm we're at the end; absence of
+        # next_page_id is the harder stop signal.
+        if not page_id:
+            return
+        if not response.get("more_available", True):
+            return
 
 
 async def _run(
@@ -103,63 +169,95 @@ async def _run(
     api_calls = 0
     posts_saved = 0
     skipped = 0
+    seen_count = 0
     seen_authors: Dict[int, Dict[str, Any]] = {}
+    partial_failure_exc: Optional[HikerAPIError] = None
 
     try:
         async with HikerAPIClient() as client:
             with session_scope() as session:
                 upsert_hashtag(session, name)
 
-            medias = await _walk_hashtag_medias(
-                client, section=section, name=name, max_items=max_posts
-            )
-            api_calls += max(1, (len(medias) // settings.HIKERAPI_PAGE_SIZE) + 1)
+            try:
+                async for media in _iter_hashtag_medias(
+                    client, section=section, name=name, max_items=max_posts
+                ):
+                    seen_count += 1
+                    author_payload = media.get("user") or {}
+                    author_id = int(author_payload.get("pk") or author_payload.get("id") or 0)
+                    if not author_id:
+                        skipped += 1
+                        continue
+
+                    existing = seen_authors.get(author_id)
+                    if existing is None or len(author_payload) > len(existing):
+                        seen_authors[author_id] = author_payload
+
+                    decision = passes_filter(
+                        like_count=int(media.get("like_count") or 0),
+                        play_count=media.get("play_count"),
+                        view_count=media.get("view_count"),
+                        taken_at=_to_naive_utc(media.get("taken_at")) or datetime.now(timezone.utc),
+                        min_likes=job.min_likes,
+                        min_impressions=job.min_impressions,
+                        since=since,
+                    )
+                    if not decision.passed:
+                        skipped += 1
+                        continue
+
+                    with session_scope() as session:
+                        upsert_ig_user(session, {"id": author_id, **author_payload})
+                        audio_id = upsert_audio_track(session, media.get("music_info"))
+                        upsert_post(
+                            session,
+                            media=media,
+                            author_id=author_id,
+                            job_id=job.id,
+                            audio_track_id=audio_id,
+                        )
+                        posts_saved += 1
+            except HikerAPIError as exc:
+                partial_failure_exc = exc
+                logger.warning(
+                    "hikerapi_hashtag_pagination_interrupted",
+                    error=str(exc),
+                    posts_saved=posts_saved,
+                    posts_seen=seen_count,
+                )
     except HikerAPIQuotaExceeded as exc:
         return ScrapeResult(outcome="rate_limited", api_calls=api_calls, error=str(exc))
     except HikerAPIError as exc:
         return ScrapeResult(outcome="soft_fail", api_calls=api_calls, error=str(exc))
 
-    for media in medias:
-        author_payload = media.get("user") or {}
-        author_id = int(author_payload.get("pk") or author_payload.get("id") or 0)
-        if not author_id:
-            skipped += 1
-            continue
+    api_calls += max(1, (seen_count // settings.HIKERAPI_PAGE_SIZE) + 1)
 
-        existing = seen_authors.get(author_id)
-        if existing is None or len(author_payload) > len(existing):
-            seen_authors[author_id] = author_payload
-
-        decision = passes_filter(
-            like_count=int(media.get("like_count") or 0),
-            play_count=media.get("play_count"),
-            view_count=media.get("view_count"),
-            taken_at=_to_naive_utc(media.get("taken_at")) or datetime.now(timezone.utc),
-            min_likes=job.min_likes,
-            min_impressions=job.min_impressions,
-            since=since,
+    if partial_failure_exc is not None:
+        outcome = (
+            "rate_limited"
+            if isinstance(partial_failure_exc, HikerAPIQuotaExceeded)
+            else "soft_fail"
         )
-        if not decision.passed:
-            skipped += 1
-            continue
-
-        with session_scope() as session:
-            upsert_ig_user(session, {"id": author_id, **author_payload})
-            audio_id = upsert_audio_track(session, media.get("music_info"))
-            upsert_post(
-                session,
-                media=media,
-                author_id=author_id,
-                job_id=job.id,
-                audio_track_id=audio_id,
-            )
-            posts_saved += 1
+        return ScrapeResult(
+            outcome=outcome,
+            api_calls=api_calls,
+            posts_saved=posts_saved,
+            error=f"{type(partial_failure_exc).__name__}: {partial_failure_exc}",
+            stats={
+                "posts_seen": seen_count,
+                "posts_saved": posts_saved,
+                "skipped_by_filter": skipped,
+                "unique_authors": len(seen_authors),
+                "source": "hikerapi",
+                "partial": True,
+            },
+        )
 
     logger.info(
         "hikerapi_hashtag_completed",
         section=section,
         hashtag=name,
-        seen=len(medias),
+        seen=seen_count,
         saved=posts_saved,
         skipped=skipped,
         unique_authors=len(seen_authors),
@@ -169,7 +267,7 @@ async def _run(
         api_calls=api_calls,
         posts_saved=posts_saved,
         stats={
-            "posts_seen": len(medias),
+            "posts_seen": seen_count,
             "posts_saved": posts_saved,
             "skipped_by_filter": skipped,
             "unique_authors": len(seen_authors),

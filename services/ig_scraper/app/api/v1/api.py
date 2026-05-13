@@ -8,6 +8,7 @@ from app.api.v1.jobs import router as jobs_router
 from app.api.v1.posts import router as posts_router
 from app.api.v1.proxies import router as proxies_router
 from app.api.v1.targets import router as targets_router
+from app.api.v1.users import router as users_router
 from app.api.v1.webhooks import router as webhooks_router
 
 api_router = APIRouter()
@@ -17,4 +18,7 @@ api_router.include_router(accounts_router, prefix="/accounts", tags=["accounts"]
 api_router.include_router(proxies_router, prefix="/proxies", tags=["proxies"])
 api_router.include_router(targets_router, prefix="/targets", tags=["targets"])
 api_router.include_router(posts_router, prefix="/posts", tags=["posts"])
+# Scraped IG profiles. NOTE: `accounts` above = scraping accounts we own;
+# `users` here = public IG profiles we've persisted.
+api_router.include_router(users_router, prefix="/users", tags=["users"])
 api_router.include_router(webhooks_router, prefix="/webhooks", tags=["webhooks"])

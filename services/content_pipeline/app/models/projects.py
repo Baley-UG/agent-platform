@@ -17,9 +17,13 @@ class Project(SQLModel, table=True):
     """A tenant. Owns brand kits, social accounts, references, plans, assets, budgets."""
 
     __tablename__ = "projects"
+    # NOTE — `projects` lives in `public` (the platform-wide multi-tenancy
+    # root). Other content_pipeline tables FK to `public.projects.id`
+    # via a cross-schema reference. See migration 0001 for the
+    # corresponding DDL.
     __table_args__ = (
         sa.UniqueConstraint("slug", name="uq_projects_slug"),
-        {"schema": SCHEMA_NAME},
+        {"schema": "public"},
     )
 
     id: uuid.UUID = Field(

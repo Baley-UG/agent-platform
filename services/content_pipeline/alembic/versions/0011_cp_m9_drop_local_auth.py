@@ -68,7 +68,7 @@ def downgrade() -> None:
         sa.Column(
             "project_id",
             postgresql.UUID(as_uuid=True),
-            sa.ForeignKey(f"{SCHEMA}.projects.id", ondelete="CASCADE"),
+            sa.ForeignKey("public.projects.id", ondelete="CASCADE"),
             nullable=False,
         ),
         sa.Column("role", sa.String(32), nullable=False, server_default="editor"),

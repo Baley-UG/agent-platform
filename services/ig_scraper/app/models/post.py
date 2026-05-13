@@ -37,6 +37,13 @@ class Post(SQLModel, table=True):
     video_duration: Optional[float] = Field(default=None)
     thumbnail_url: Optional[str] = Field(default=None)
     media_urls: Optional[list] = Field(default=None, sa_column=Column(JSONB, nullable=True))
+    # S3 mirror — `app/services/mirror.py` copies the post's primary
+    # media + poster into our bucket when the author is on a tracked
+    # target OR an admin pins the post. Until then both are NULL and
+    # the panel relies on `media_urls[0]` (subject to IG TTL).
+    media_s3_key: Optional[str] = Field(default=None)
+    poster_s3_key: Optional[str] = Field(default=None)
+    media_mirrored_at: Optional[datetime] = Field(default=None)
     location: Optional[dict] = Field(default=None, sa_column=Column(JSONB, nullable=True))
     music_info: Optional[dict] = Field(default=None, sa_column=Column(JSONB, nullable=True))
     audio_track_id: Optional[str] = Field(default=None, foreign_key="ig_audio_tracks.id")

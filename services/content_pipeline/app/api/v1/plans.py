@@ -175,15 +175,27 @@ def stock(
     return [RenderVariantRead.model_validate(r) for r in rows]
 
 
-@stock_router.get("/calendar", response_model=List[PlanSlotRead])
+@stock_router.get("/calendar")
 def calendar(
     from_: datetime = Query(..., alias="from"),
     to: datetime = Query(...),
     project: Project = Depends(get_project),
     session: Session = Depends(get_session),
-) -> List[PlanSlotRead]:
-    """Slots in [from, to). Used by the admin's calendar view."""
+) -> List[dict]:
+    """Slots in [from, to). Returns each slot enriched with the resolved
+    caption (slot override → scenario default → reference caption), the
+    variant's thumbnail asset id, and the upstream scenario/reference
+    ids so the calendar can render a content snapshot without firing
+    one HTTP call per event.
+
+    Plain PlanSlotRead fields are preserved so existing callers keep
+    working; the new fields are additive (`caption_resolved`,
+    `thumbnail_asset_id`, `scenario_id`, `reference_caption_snippet`).
+    """
+    from app.models.content_references import ContentReference
     from app.models.plan_slots import PlanSlot
+    from app.models.render_variants import RenderVariant
+    from app.models.scenarios import Scenario
     from sqlmodel import select
 
     stmt = (
@@ -195,4 +207,58 @@ def calendar(
         )
         .order_by(PlanSlot.scheduled_at.asc())
     )
-    return [PlanSlotRead.model_validate(s) for s in session.exec(stmt).all()]
+    slots = list(session.exec(stmt).all())
+
+    # Batch-load variants + scenarios + references so we don't N+1.
+    variant_ids = {s.variant_id for s in slots if s.variant_id}
+    variants_by_id: dict = {}
+    scenarios_by_id: dict = {}
+    references_by_id: dict = {}
+    if variant_ids:
+        rvs = session.exec(select(RenderVariant).where(RenderVariant.id.in_(variant_ids))).all()
+        variants_by_id = {v.id: v for v in rvs}
+        scenario_ids = {v.scenario_id for v in rvs if v.scenario_id}
+        if scenario_ids:
+            scs = session.exec(select(Scenario).where(Scenario.id.in_(scenario_ids))).all()
+            scenarios_by_id = {s.id: s for s in scs}
+            ref_ids = {s.reference_id for s in scs if s.reference_id}
+            if ref_ids:
+                refs = session.exec(
+                    select(ContentReference).where(ContentReference.id.in_(ref_ids))
+                ).all()
+                references_by_id = {r.id: r for r in refs}
+
+    out: List[dict] = []
+    for slot in slots:
+        base = PlanSlotRead.model_validate(slot).model_dump(mode="json")
+        # Resolve caption + hashtags by precedence so the panel renders
+        # the actual text that would publish (or hints "needs caption").
+        variant = variants_by_id.get(slot.variant_id) if slot.variant_id else None
+        scenario = (
+            scenarios_by_id.get(variant.scenario_id) if variant and variant.scenario_id else None
+        )
+        reference = (
+            references_by_id.get(scenario.reference_id) if scenario and scenario.reference_id else None
+        )
+
+        caption = (
+            slot.caption_override
+            or (scenario.default_caption if scenario else None)
+            or (reference.caption if reference else None)
+        )
+        hashtags = (
+            list(slot.hashtags_override or [])
+            or list((scenario.default_hashtags if scenario else None) or [])
+            or list((reference.hashtags if reference else None) or [])
+        )
+
+        base["caption_resolved"] = caption
+        base["hashtags_resolved"] = hashtags or None
+        base["thumbnail_asset_id"] = (
+            str(variant.thumbnail_asset_id) if variant and variant.thumbnail_asset_id else None
+        )
+        base["scenario_id"] = str(variant.scenario_id) if variant and variant.scenario_id else None
+        base["reference_id"] = str(scenario.reference_id) if scenario and scenario.reference_id else base.get("reference_id")
+        out.append(base)
+
+    return out

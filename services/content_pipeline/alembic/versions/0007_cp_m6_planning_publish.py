@@ -27,7 +27,7 @@ def upgrade() -> None:
         sa.Column(
             "project_id",
             postgresql.UUID(as_uuid=True),
-            sa.ForeignKey(f"{SCHEMA}.projects.id", ondelete="CASCADE"),
+            sa.ForeignKey("public.projects.id", ondelete="CASCADE"),
             nullable=False,
         ),
         sa.Column("timezone", sa.String(64), nullable=False, server_default="Europe/Istanbul"),
@@ -52,7 +52,7 @@ def upgrade() -> None:
         sa.Column(
             "project_id",
             postgresql.UUID(as_uuid=True),
-            sa.ForeignKey(f"{SCHEMA}.projects.id", ondelete="CASCADE"),
+            sa.ForeignKey("public.projects.id", ondelete="CASCADE"),
             nullable=False,
         ),
         sa.Column("week_start_date", sa.Date, nullable=False),
@@ -80,7 +80,7 @@ def upgrade() -> None:
         sa.Column(
             "project_id",
             postgresql.UUID(as_uuid=True),
-            sa.ForeignKey(f"{SCHEMA}.projects.id", ondelete="CASCADE"),
+            sa.ForeignKey("public.projects.id", ondelete="CASCADE"),
             nullable=False,
         ),
         sa.Column("scheduled_at", sa.DateTime(timezone=True), nullable=False),

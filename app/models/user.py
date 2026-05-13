@@ -50,6 +50,16 @@ class User(BaseModel, table=True):
         return bcrypt.checkpw(password.encode("utf-8"), self.hashed_password.encode("utf-8"))
 
     @staticmethod
+    def verify_password_against_hash(password: str, hashed: str) -> bool:
+        """Stateless variant used by the auth service to mitigate the
+        login timing oracle. Verifies a submitted password against an
+        arbitrary hash (typically a precomputed dummy) so the
+        unknown-email branch burns the same bcrypt cycles as a real
+        login. Result is discarded; only side-effect (CPU time) matters.
+        """
+        return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("utf-8"))
+
+    @staticmethod
     def hash_password(password: str) -> str:
         """Hash a password using bcrypt (existing chatbot password semantics)."""
         salt = bcrypt.gensalt()

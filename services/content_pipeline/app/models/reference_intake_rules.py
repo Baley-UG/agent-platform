@@ -35,7 +35,7 @@ class ReferenceIntakeRule(SQLModel, table=True):
     project_id: uuid.UUID = Field(
         sa_column=sa.Column(
             PGUUID(as_uuid=True),
-            sa.ForeignKey(f"{SCHEMA_NAME}.projects.id", ondelete="CASCADE"),
+            sa.ForeignKey("public.projects.id", ondelete="CASCADE"),
             nullable=False,
         )
     )

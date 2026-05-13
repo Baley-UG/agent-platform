@@ -342,7 +342,7 @@ async def _run(
     """Shared body for full + incremental — only the stop condition and
     backfill flag differ."""
     params = job.params or {}
-    fetch_comments_flag = bool(params.get("fetch_comments", True))
+    fetch_comments_flag = bool(params.get("fetch_comments", False))
     comment_limit = int(params.get("comment_limit", settings.IG_COMMENT_DEFAULT_LIMIT))
 
     throttle = Throttle()
@@ -382,32 +382,68 @@ async def _run(
                     stop_post_id = row[0]
                     stop_taken_at = _to_naive_utc(row[1])
 
-        hard_cap = settings.IG_MAX_POSTS_PER_JOB if full_backfill else min(
-            settings.IG_MAX_POSTS_PER_JOB, int(params.get("max_posts", 200))
+        # See hikerapi/user_feed.py for the same logic — page-based defaults
+        # configured via env so ops can reason in pages, not posts.
+        _default_pages = (
+            settings.IG_FULL_BACKFILL_DEFAULT_PAGES
+            if full_backfill
+            else settings.IG_INCREMENTAL_DEFAULT_PAGES
+        )
+        _default_max = _default_pages * settings.IG_DEFAULT_PAGE_SIZE
+        hard_cap = min(
+            settings.IG_MAX_POSTS_PER_JOB,
+            int(params.get("max_posts", _default_max)),
         )
 
-        # Walk feed (always) + clips (always; some accounts only post reels).
-        feed = await _walk_feed(
-            client,
-            user_id,
-            fetcher=_fetch_feed_page,
-            stop_at_post_id=stop_post_id,
-            stop_at_taken_at=stop_taken_at,
-            hard_cap=hard_cap,
-            throttle=throttle,
-        )
-        clips = await _walk_feed(
-            client,
-            user_id,
-            fetcher=_fetch_clips_page,
-            stop_at_post_id=stop_post_id,
-            stop_at_taken_at=stop_taken_at,
-            hard_cap=hard_cap,
-            throttle=throttle,
-        )
+        # Walk feed + clips; each walk's mid-flight failure is caught so a
+        # rate-limit on the second walk doesn't discard the first. The
+        # persist step then runs against whatever we collected.
+        feed: List[Dict[str, Any]] = []
+        clips: List[Dict[str, Any]] = []
+        partial_failure_exc: Optional[Exception] = None
+        try:
+            feed = await _walk_feed(
+                client,
+                user_id,
+                fetcher=_fetch_feed_page,
+                stop_at_post_id=stop_post_id,
+                stop_at_taken_at=stop_taken_at,
+                hard_cap=hard_cap,
+                throttle=throttle,
+            )
+        except Exception as exc:  # noqa: BLE001
+            partial_failure_exc = exc
+            logger.warning(
+                "instagrapi_feed_walk_interrupted",
+                error=str(exc),
+                collected=len(feed),
+            )
+
+        if partial_failure_exc is None:
+            try:
+                clips = await _walk_feed(
+                    client,
+                    user_id,
+                    fetcher=_fetch_clips_page,
+                    stop_at_post_id=stop_post_id,
+                    stop_at_taken_at=stop_taken_at,
+                    hard_cap=hard_cap,
+                    throttle=throttle,
+                )
+            except Exception as exc:  # noqa: BLE001
+                partial_failure_exc = exc
+                logger.warning(
+                    "instagrapi_clips_walk_interrupted",
+                    error=str(exc),
+                    collected=len(clips),
+                )
+
         merged = _merge_dedupe(feed, clips)
         api_calls_walk = 1 + len(feed) // 50 + len(clips) // 50  # rough; throttle counts the rest
 
+        # Always persist what we collected, even on partial failure. That's
+        # the whole point — buffered pagination must not throw away pages
+        # already on the wire.
         stats = await _persist_media(
             merged,
             author_id=user_id,
@@ -421,20 +457,35 @@ async def _run(
 
         _update_target_cursor(job, merged, full_backfill=full_backfill)
 
+        result_stats = {
+            "posts_seen": len(merged),
+            "posts_saved": stats["posts_saved"],
+            "comments_saved": stats["comments_saved"],
+            "skipped_by_filter": stats["skipped_by_filter"],
+            "feed_pages": len(feed),
+            "clip_pages": len(clips),
+        }
+
+        if partial_failure_exc is not None:
+            outcome = _classify_runtime_exception(partial_failure_exc)
+            result_stats["partial"] = True
+            return ScrapeResult(
+                outcome=outcome,
+                api_calls=stats["api_calls"] + api_calls_walk + 2,
+                posts_saved=stats["posts_saved"],
+                comments_saved=stats["comments_saved"],
+                stories_saved=0,
+                error=f"{type(partial_failure_exc).__name__}: {partial_failure_exc}",
+                stats=result_stats,
+            )
+
         return ScrapeResult(
             outcome="success",
             api_calls=stats["api_calls"] + api_calls_walk + 2,  # +profile +user_info
             posts_saved=stats["posts_saved"],
             comments_saved=stats["comments_saved"],
             stories_saved=0,
-            stats={
-                "posts_seen": len(merged),
-                "posts_saved": stats["posts_saved"],
-                "comments_saved": stats["comments_saved"],
-                "skipped_by_filter": stats["skipped_by_filter"],
-                "feed_pages": len(feed),
-                "clip_pages": len(clips),
-            },
+            stats=result_stats,
         )
     except Exception as exc:  # noqa: BLE001
         outcome = _classify_runtime_exception(exc)

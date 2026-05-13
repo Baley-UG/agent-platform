@@ -18,6 +18,7 @@ import httpx
 
 from app.core.config import settings
 from app.core.logging import logger
+from app.services import hikerapi_usage
 
 
 class HikerAPIError(Exception):
@@ -77,10 +78,24 @@ class HikerAPIClient:
             "true" if settings.HIKERAPI_PRIVACY_CHECK else "false",
         )
 
+        # Per-request log so we can audit HikerAPI billing/usage in Loki:
+        #   {service="ig-scraper-worker"} |= "hikerapi_request" | json | path="/v1/user/medias/chunk"
+        # Strips `privacy_check` from the logged params (it's an internal
+        # default we set on every call) and trims long values.
+        _log_params = {
+            k: (str(v)[:120] if not isinstance(v, (int, float, bool)) else v)
+            for k, v in clean_params.items()
+            if k != "privacy_check"
+        }
+        logger.info("hikerapi_request", path=path, params=_log_params)
+
         for attempt in range(1, self._max_retries + 1):
             try:
                 response = await self._http.get(path, params=clean_params)
             except (httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError) as exc:
+                # Network failure has no HTTP status — record as 0 so it
+                # still shows up in the per-day usage table.
+                hikerapi_usage.record_call(path, 0)
                 if attempt >= self._max_retries:
                     raise HikerAPIError(f"network error after {attempt} retries: {exc}") from exc
                 backoff = 2 ** (attempt - 1)
@@ -95,6 +110,10 @@ class HikerAPIClient:
                 continue
 
             status = response.status_code
+            # Record the call BEFORE the status branching below. Even on
+            # 402/429 the request was billed by HikerAPI, so it has to
+            # land in the counter.
+            hikerapi_usage.record_call(path, status)
             if 200 <= status < 300:
                 try:
                     return response.json()
@@ -180,21 +199,53 @@ class HikerAPIClient:
                 page_params["end_cursor"] = cursor
             page = await self.get(path, **page_params)
 
-            # HikerAPI's items live under different keys depending on the
-        # endpoint — `medias`, `response`, `comments`, `items`. We try
-        # the requested key first, then the common fallbacks. Returns
-        # `[]` (empty page → loop ends) when none of them match.
-        items = page.get(items_key)
-        if not isinstance(items, list):
-            for fallback in ("response", "items", "medias", "comments", "stories"):
-                if fallback == items_key:
-                    continue
-                candidate = page.get(fallback)
+            # HikerAPI returns two shapes depending on the endpoint:
+            #   1. Object: {"<items_key>": [...], "next_max_id": "..."}
+            #      (e.g. /v2/hashtag/medias/top, /v1/media/comments/chunk)
+            #   2. Bare 2-tuple-as-array: [[item, item, ...], "next_cursor"]
+            #      (e.g. /v1/user/medias/chunk, /v1/user/clips/chunk —
+            #      most chunked v1 endpoints, where the second element is
+            #      the cursor string or null).
+            # We normalise both into (items, next_cursor) here so the
+            # caller never has to think about it.
+            items: list = []
+            next_cursor: Optional[str] = None
+
+            if isinstance(page, list):
+                # Shape 2: [items, cursor]. Cursor is None/empty on the
+                # last page. Some endpoints just return [items] without a
+                # cursor element — treat that as "no more data".
+                if page and isinstance(page[0], list):
+                    items = page[0]
+                    next_cursor = page[1] if len(page) > 1 and isinstance(page[1], str) else None
+                else:
+                    # Bare list of items, no cursor structure at all.
+                    items = page
+            elif isinstance(page, dict):
+                # Shape 1. Try requested key first, then common fallbacks.
+                candidate = page.get(items_key)
                 if isinstance(candidate, list):
                     items = candidate
-                    break
-        if not isinstance(items, list):
-            items = []
+                else:
+                    for fallback in ("response", "items", "medias", "comments", "stories"):
+                        if fallback == items_key:
+                            continue
+                        candidate = page.get(fallback)
+                        if isinstance(candidate, list):
+                            items = candidate
+                            break
+                # HikerAPI uses different cursor field names depending on
+                # the endpoint:
+                #   - v1/*/chunk + most v2 paginated objects → end_cursor
+                #   - v2/hashtag/medias/{top,recent}        → next_page_id
+                #   - some legacy endpoints                 → next_max_id
+                next_cursor = (
+                    page.get("end_cursor")
+                    or page.get("next_page_id")
+                    or page.get("next_max_id")
+                    or page.get("next_cursor")
+                )
+
             for item in items:
                 if stop_when is not None and stop_when(item):
                     return
@@ -203,12 +254,7 @@ class HikerAPIClient:
                 if max_items is not None and yielded >= max_items:
                     return
 
-            # HikerAPI uses different cursor field names depending on the
-            # endpoint shape; check the common ones.
-            cursor = (
-                page.get("end_cursor")
-                or page.get("next_max_id")
-                or page.get("next_cursor")
-            )
-            if not cursor:
+            # Empty page or no cursor → no more data.
+            if not items or not next_cursor:
                 return
+            cursor = next_cursor

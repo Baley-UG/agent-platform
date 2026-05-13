@@ -1,0 +1,261 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "title": "HikerAPI Usage",
+  "tags": ["loki", "hikerapi", "scraper"],
+  "timezone": "",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "templating": {"list": []},
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Total HikerAPI requests (selected range)",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "gridPos": {"h": 5, "w": 8, "x": 0, "y": 0},
+      "targets": [
+        {
+          "expr": "sum(count_over_time({service=\"ig-scraper-worker\"} |= \"hikerapi_request\" [$__range]))",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 1000},
+              {"color": "red", "value": 5000}
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area"
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Rate-limit / billing errors (range)",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "gridPos": {"h": 5, "w": 8, "x": 8, "y": 0},
+      "targets": [
+        {
+          "expr": "sum(count_over_time({service=\"ig-scraper-worker\"} |~ \"hikerapi_rate_limit|HikerAPIQuotaExceeded|InsufficientFunds\" [$__range]))",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "orange", "value": 1},
+              {"color": "red", "value": 10}
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Network retries (range)",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "gridPos": {"h": 5, "w": 8, "x": 16, "y": 0},
+      "targets": [
+        {
+          "expr": "sum(count_over_time({service=\"ig-scraper-worker\"} |= \"hikerapi_network_retry\" [$__range]))",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area"
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Requests per minute by endpoint path",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 5},
+      "targets": [
+        {
+          "expr": "sum by (path) (count_over_time({service=\"ig-scraper-worker\"} |= \"hikerapi_request\" | json | line_format \"{{.path}}\" | label_format path=\"{{__line__}}\" [1m]))",
+          "refId": "A",
+          "legendFormat": "{{path}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 15, "lineWidth": 2, "stacking": {"mode": "normal"}}
+        }
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "right", "calcs": ["sum", "lastNotNull"]}
+      }
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Top endpoint paths (range total)",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "gridPos": {"h": 10, "w": 12, "x": 0, "y": 14},
+      "targets": [
+        {
+          "expr": "topk(20, sum by (path) (count_over_time({service=\"ig-scraper-worker\"} |= \"hikerapi_request\" | json | line_format \"{{.path}}\" | label_format path=\"{{__line__}}\" [$__range])))",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {"Time": true},
+            "renameByName": {"Value": "requests", "path": "endpoint"}
+          }
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "logs",
+      "title": "Latest HikerAPI requests (live)",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "gridPos": {"h": 10, "w": 12, "x": 12, "y": 14},
+      "targets": [
+        {
+          "expr": "{service=\"ig-scraper-worker\"} |= \"hikerapi_request\"",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "wrapLogMessage": true,
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "sortOrder": "Descending"
+      }
+    },
+    {
+      "id": 7,
+      "type": "logs",
+      "title": "HikerAPI errors & retries",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 24},
+      "targets": [
+        {
+          "expr": "{service=\"ig-scraper-worker\"} |~ \"hikerapi_rate_limit|hikerapi_5xx_retry|hikerapi_network_retry|HikerAPIQuotaExceeded|InsufficientFunds\"",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "wrapLogMessage": true,
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "sortOrder": "Descending"
+      }
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Today's HikerAPI calls (from DB, all statuses)",
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "gridPos": {"h": 5, "w": 8, "x": 0, "y": 34},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT COALESCE(SUM(calls_total), 0)::bigint AS calls FROM ig_hikerapi_usage WHERE date = CURRENT_DATE"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 1000},
+              {"color": "red", "value": 5000}
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 9,
+      "type": "table",
+      "title": "Today by endpoint × status (from DB)",
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "gridPos": {"h": 10, "w": 16, "x": 8, "y": 34},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT path AS endpoint, status_code, calls_total AS calls, updated_at FROM ig_hikerapi_usage WHERE date = CURRENT_DATE ORDER BY calls_total DESC LIMIT 50"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Daily HikerAPI usage by endpoint (last 30 days)",
+      "datasource": {"type": "postgres", "uid": "postgres"},
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 44},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT date::timestamp AS time, path AS metric, SUM(calls_total)::bigint AS value FROM ig_hikerapi_usage WHERE date >= CURRENT_DATE - INTERVAL '30 days' GROUP BY date, path ORDER BY date"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "bars", "fillOpacity": 80, "lineWidth": 1, "stacking": {"mode": "normal"}}
+        }
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "right", "calcs": ["sum"]}
+      }
+    }
+  ]
+}

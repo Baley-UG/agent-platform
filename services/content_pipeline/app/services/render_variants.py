@@ -94,6 +94,10 @@ def mark_ready(
     render_recipe: Optional[dict] = None,
 ) -> RenderVariant:
     variant.final_asset_id = final_asset.id
+    # Single-asset variants store a 1-element list so the
+    # `final_asset_ids` field is always authoritative for downstream
+    # carousel-aware consumers (publisher, panel).
+    variant.final_asset_ids = [str(final_asset.id)]
     if thumbnail_asset is not None:
         variant.thumbnail_asset_id = thumbnail_asset.id
     if duration_sec is not None:
@@ -102,6 +106,40 @@ def mark_ready(
         variant.file_size_bytes = file_size_bytes
     if render_recipe is not None:
         variant.render_recipe = render_recipe
+    variant.status = "ready"
+    variant.error = None
+    session.add(variant)
+    session.flush()
+    return variant
+
+
+def mark_ready_carousel(
+    session: Session,
+    variant: RenderVariant,
+    *,
+    assets: List[MediaAsset],
+    thumbnail_asset: Optional[MediaAsset] = None,
+    render_recipe: Optional[dict] = None,
+) -> RenderVariant:
+    """Mark a multi-image (carousel post) variant ready.
+
+    No single composite mp4 — we publish the per-slide images directly
+    via Instagram's CAROUSEL_ALBUM endpoint. `final_asset_id` mirrors
+    `assets[0].id` so legacy single-asset readers still get the cover
+    image. Asset order is the publication order.
+    """
+    if not assets:
+        raise ValueError("mark_ready_carousel requires at least one asset")
+    variant.final_asset_id = assets[0].id
+    variant.final_asset_ids = [str(a.id) for a in assets]
+    if thumbnail_asset is not None:
+        variant.thumbnail_asset_id = thumbnail_asset.id
+    else:
+        variant.thumbnail_asset_id = assets[0].id
+    if render_recipe is not None:
+        variant.render_recipe = render_recipe
+    # Carousels have no single "duration"; leave fields at their
+    # previous values. file_size_bytes likewise stays unset.
     variant.status = "ready"
     variant.error = None
     session.add(variant)
