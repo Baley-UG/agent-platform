@@ -235,21 +235,46 @@ def import_from_scraper(
     # the panel falls back to `metadata.ig_media_urls`.
     media_s3_key: Optional[str] = None
     poster_s3_key: Optional[str] = None
+    # Phase 4 — also mirror each carousel slide so the img2img pipeline
+    # has a stable init image for every scene_idx (IG CDN URLs expire
+    # within days; we need permanence). Stored as a parallel S3 key
+    # list in `metadata.slide_s3_keys[]`, index-aligned with
+    # `ig_media_urls` so the panel and scenarios resolver can pick
+    # `slide_s3_keys[i]` for scene i.
+    slide_s3_keys: list[Optional[str]] = []
+    media_type = raw.get("media_type")
+    is_carousel = media_type == 8
     if media_urls:
         mirrored = _mirror_to_s3(media_urls[0], project_id, kind="references")
         if mirrored:
             media_s3_key = mirrored[0]
-            # If the mirrored asset itself is an image (photo posts /
-            # carousel items), use it as the poster as well so the
-            # panel has something to render even before video mirror.
+            slide_s3_keys.append(mirrored[0])
             if mirrored[1].startswith("image/"):
                 poster_s3_key = mirrored[0]
+        else:
+            slide_s3_keys.append(None)
+        # Carousel — keep mirroring the rest of the slides. Single-asset
+        # sources (photo / reel) skip this loop. Failures stay non-fatal:
+        # we just leave the slot as None and the resolver wraps around
+        # the existing slides.
+        if is_carousel and len(media_urls) > 1:
+            for slide_url in media_urls[1:]:
+                mirrored_slide = _mirror_to_s3(
+                    slide_url, project_id, kind="references"
+                )
+                slide_s3_keys.append(mirrored_slide[0] if mirrored_slide else None)
     # Separate thumbnail when ig_scraper supplies one and we haven't
     # already promoted the media as a poster.
     if poster_s3_key is None and raw.get("thumbnail_url"):
         thumb = _mirror_to_s3(raw["thumbnail_url"], project_id, kind="references")
         if thumb:
             poster_s3_key = thumb[0]
+    # Stamp slide keys into metadata so the resolver can find them
+    # without re-mirroring. Only set when at least one slide mirrored;
+    # otherwise leave it absent and let `compute_init_keys` fall back
+    # to media_s3_key/poster_s3_key.
+    if any(slide_s3_keys):
+        metadata["slide_s3_keys"] = slide_s3_keys
 
     ref = ContentReference(
         project_id=project_id,
@@ -265,7 +290,28 @@ def import_from_scraper(
         status="approved" if payload.auto_approve else "candidate",
         imported_by=created_by or "import-from-scraper",
     )
-    return _commit_reference(session, ref)
+    committed = _commit_reference(session, ref)
+
+    # Phase 4 — kick off reel keyframe extraction. Photo / carousel
+    # sources already have a per-slide init image via
+    # `metadata.slide_s3_keys`; only video sources need ffmpeg.
+    if (media_type == 2 or (raw.get("product_type") or "").lower() in ("clips", "reels")) and media_s3_key:
+        try:
+            from app.services import queue as queue_svc
+
+            queue_svc.enqueue(
+                "frame_extract",
+                "app.workers.reference_frame_extract.run",
+                str(committed.id),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "ref_frame_extract_enqueue_failed",
+                reference_id=str(committed.id),
+                error=str(exc),
+            )
+
+    return committed
 
 
 def list_(

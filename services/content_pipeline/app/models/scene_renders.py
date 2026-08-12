@@ -77,6 +77,42 @@ class SceneRender(SQLModel, table=True):
         ),
     )
 
+    # CP-Phase 2 — director's resolved brand asset for this cell.
+    # When set, the image_gen worker SKIPS synthesis and treats the
+    # resolved asset as if image_gen had produced it. NULL means
+    # "AI fallback" (legacy text2img / img2img path).
+    resolved_asset_id: Optional[uuid.UUID] = Field(
+        default=None,
+        sa_column=sa.Column(
+            PGUUID(as_uuid=True),
+            sa.ForeignKey(f"{SCHEMA_NAME}.media_assets.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+    )
+    # Short text explaining why the director picked this asset — useful
+    # for the panel's "why this asset?" tooltip + admin sanity-check.
+    match_reason: Optional[str] = Field(
+        default=None, sa_column=sa.Column(sa.Text, nullable=True)
+    )
+    # Phase 2.5 — img2img remix strength when resolved_asset_id is set.
+    # 0..0.15 = pure passthrough (no LLM call). 0.16..0.6 = light remix
+    # (preserves composition). 0.6..1.0 = heavy remix (free-er prompt
+    # adherence, original used loosely as composition guide). NULL means
+    # "use default from model_routes.params.image_strength".
+    image_strength: Optional[float] = Field(
+        default=None, sa_column=sa.Column(sa.Numeric(3, 2), nullable=True)
+    )
+    # Phase 4 — img2img-by-default. The reference's matching frame
+    # (photo / carousel slide / reel keyframe) seeded onto this cell at
+    # materialize time. image_gen presigns this key as the init image
+    # for fal's `/image-to-image` endpoint when `resolved_asset_id` is
+    # NOT set. Stored as a plain S3 key (not a media_assets ref) since
+    # reference frames are managed under content_references, not the
+    # media_assets versioning chain.
+    init_image_s3_key: Optional[str] = Field(
+        default=None, sa_column=sa.Column(sa.String(512), nullable=True)
+    )
+
     status: str = Field(default="pending", sa_column=sa.Column(sa.String(32), nullable=False, server_default="pending"))
     error: Optional[str] = Field(default=None, sa_column=sa.Column(sa.Text, nullable=True))
 

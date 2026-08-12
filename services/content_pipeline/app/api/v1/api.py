@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from app.api.v1 import (
     assets,
     auto_generation,
+    brand_assets,
     brand_kits,
     cost,
     intake_rules,
@@ -28,6 +29,7 @@ api_router = APIRouter()
 # under `/projects/{project_id}/...` because they own per-project rows
 # (brand_kits, scenarios, plan_slots, etc.).
 api_router.include_router(brand_kits.router)
+api_router.include_router(brand_assets.router)
 api_router.include_router(social_accounts.router)
 api_router.include_router(templates.router)
 api_router.include_router(music.router)

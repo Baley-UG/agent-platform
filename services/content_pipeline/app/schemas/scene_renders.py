@@ -16,6 +16,14 @@ class SceneRenderRead(BaseModel):
     aspect_ratio: str
     image_asset_id: Optional[uuid.UUID]
     video_asset_id: Optional[uuid.UUID]
+    # Phase 2 — director-resolved brand asset + LLM rationale +
+    # img2img remix strength (None = legacy synth path).
+    resolved_asset_id: Optional[uuid.UUID] = None
+    match_reason: Optional[str] = None
+    image_strength: Optional[float] = None
+    # Phase 4 — reference frame seeded onto this cell at materialize
+    # time. NULL means image_gen will fall through to pure t2i.
+    init_image_s3_key: Optional[str] = None
     status: str
     error: Optional[str]
     created_at: datetime

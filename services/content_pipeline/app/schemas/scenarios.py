@@ -23,6 +23,10 @@ class ScenarioCreate(BaseModel):
     reference_id: uuid.UUID
     target_variants: Optional[List[str]] = None
     quality_tier: QualityTier = "final"
+    # Production mode. Defaults to 'recreate' (legacy AI-synth pipeline).
+    # 'brand_build' opts into the director LLM + brand asset library.
+    # 'inspire' produces hook/CTA only — no visual production.
+    production_mode: Literal["recreate", "brand_build", "inspire"] = "recreate"
     # Reuse policy bypass — required when the reference has been used before
     # in projects with reuse_policy='warn'. Ignored when policy='block' (always denied)
     # or 'silent' (never enforced).
@@ -53,6 +57,7 @@ class ScenarioRead(BaseModel):
     target_aspect_groups: Optional[List[str]]
     quality_tier: str
     generation_cost_usd: float
+    production_mode: str = "recreate"
     default_caption: Optional[str] = None
     default_hashtags: Optional[List[str]] = None
     voiceover_asset_id: Optional[uuid.UUID] = None

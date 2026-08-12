@@ -28,7 +28,7 @@ def test_metadata_registers_all_tables():
     from sqlmodel import SQLModel
 
     expected = {
-        "projects",
+        # "projects" moved to the main app (public schema) in CP-M9.
         "brand_kits",
         "social_accounts",
         "content_references",
@@ -55,10 +55,13 @@ def test_metadata_registers_all_tables():
 def test_app_routes_mounted():
     from app.main import app
 
-    paths = {route.path for route in app.routes}
+    # Newer FastAPI wraps included routers in a lazy _IncludedRouter
+    # whose children only materialize when the OpenAPI schema is
+    # built — so assert against the schema paths, not app.routes.
+    paths = set(app.openapi().get('paths', {}))
     # API prefix is /api/v1
     expected_prefixes = {
-        "/api/v1/projects",
+        # project entity CRUD moved to main app (CP-M9)
         "/api/v1/projects/{project_id}/brand-kits",
         "/api/v1/projects/{project_id}/social-accounts",
         "/api/v1/projects/{project_id}/templates",

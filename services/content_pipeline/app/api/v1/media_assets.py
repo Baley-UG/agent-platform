@@ -35,6 +35,45 @@ def _scoped(session: Session, project: Project, asset_id: uuid.UUID) -> MediaAss
     return asset
 
 
+@router.get("", response_model=list[MediaAssetRead])
+def list_assets(
+    parent_scenario_id: Optional[uuid.UUID] = Query(default=None),
+    type_: Optional[str] = Query(default=None, alias="type"),
+    active_only: bool = Query(
+        default=True,
+        description="Only the active version of each chain (replaced_by_id IS NULL).",
+    ),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    project: Project = Depends(get_project),
+    session: Session = Depends(get_session),
+) -> list[MediaAssetRead]:
+    """Filtered asset listing.
+
+    The panel uses this for per-scene voiceover clips
+    (`?parent_scenario_id=…&type=voiceover_scene`) — the scenario's
+    `voiceover_asset_id` only points at clip 0 in per-scene mode, so
+    playing the full narration requires listing the clips. Generic
+    filters so other panel views (all finals of a scenario, etc.) can
+    reuse it without new endpoints.
+    """
+    from sqlmodel import select
+
+    stmt = select(MediaAsset).where(MediaAsset.project_id == project.id)
+    if parent_scenario_id is not None:
+        stmt = stmt.where(MediaAsset.parent_scenario_id == parent_scenario_id)
+    if type_ is not None:
+        stmt = stmt.where(MediaAsset.type == type_)
+    if active_only:
+        stmt = stmt.where(MediaAsset.replaced_by_id.is_(None))
+    stmt = (
+        stmt.order_by(MediaAsset.parent_scene_idx, MediaAsset.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    return [MediaAssetRead.model_validate(a) for a in session.exec(stmt).all()]
+
+
 @router.get("/{asset_id}", response_model=MediaAssetRead)
 def get_asset(
     asset_id: uuid.UUID,

@@ -64,12 +64,34 @@ class FalImageProvider(ImageProvider):
         height: int,
         negative_prompt: Optional[str] = None,
         seed: Optional[int] = None,
+        init_image_url: Optional[str] = None,
+        strength: Optional[float] = None,
     ) -> ImageResponse:
+        """Flux T2I or I2I.
+
+        When `init_image_url` is provided we switch to the model's
+        `/image-to-image` endpoint variant. The default model id has
+        no path suffix (`fal-ai/flux/dev`); I2I appends
+        `/image-to-image`. `strength` (0..1) controls how much of the
+        init image is preserved — lower = more faithful, higher =
+        freer remix. We never pass `image_size` on the I2I path:
+        Flux infers output dims from the init image, and forcing a
+        size triggers fal's resize step which can letterbox or crop.
+        """
         if route.provider != "fal":
             raise FalError(f"FalImageProvider received non-fal route: {route.provider}")
 
+        is_img2img = bool(init_image_url)
+
         body: dict = {"prompt": prompt}
-        body.update(_fal_size(width, height))
+        if is_img2img:
+            body["image_url"] = init_image_url
+            # Pass strength only when caller specified one — fal uses a
+            # sensible default (typically ~0.95 for Flux dev).
+            if strength is not None:
+                body["strength"] = max(0.0, min(1.0, float(strength)))
+        else:
+            body.update(_fal_size(width, height))
         params = route.params or {}
         for key in ("num_inference_steps", "guidance_scale", "num_images", "enable_safety_checker"):
             if key in params:
@@ -79,7 +101,13 @@ class FalImageProvider(ImageProvider):
         if seed is not None:
             body["seed"] = seed
 
-        url = f"{self.base_url}/{route.model_id}"
+        # Pick the endpoint variant. The route's `model_id` may already
+        # carry the `/image-to-image` suffix (admin pinned it in the
+        # model_routes table); only append when it doesn't.
+        endpoint_id = route.model_id
+        if is_img2img and not endpoint_id.rstrip("/").endswith("/image-to-image"):
+            endpoint_id = f"{endpoint_id.rstrip('/')}/image-to-image"
+        url = f"{self.base_url}/{endpoint_id}"
         headers = {
             "Authorization": f"Key {self.api_key}",
             "Content-Type": "application/json",

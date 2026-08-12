@@ -22,6 +22,13 @@ class MediaAsset(SQLModel, table=True):
     """An S3-backed artifact. One row per version."""
 
     __tablename__ = "media_assets"
+    # NOTE: the `ix_media_assets_brand_kit_type` partial index is declared
+    # in the alembic migration only — SQLModel processes __table_args__
+    # before the column Field declarations below, so referencing the new
+    # brand_kit_id / brand_asset_type columns by name here raises
+    # `ConstraintColumnNotFoundError` at import time. The index exists
+    # in the DB; we don't need a Python-side Index() for the matcher to
+    # use it (PostgreSQL planner picks it up automatically).
     __table_args__ = (
         sa.Index("ix_media_assets_project_type", "project_id", "type"),
         sa.Index("ix_media_assets_scenario", "parent_scenario_id"),
@@ -67,10 +74,48 @@ class MediaAsset(SQLModel, table=True):
         default=None, sa_column=sa.Column(PGUUID(as_uuid=True), nullable=True)
     )
 
+    # Phase 3 — frame provenance. Set on rows extracted by the video
+    # frame-extract worker. The director can offer the parent video's
+    # keyframes as picks; compose can fall back to cutting the segment
+    # around `source_timestamp_sec` from the parent video.
+    source_asset_id: Optional[uuid.UUID] = Field(
+        default=None, sa_column=sa.Column(PGUUID(as_uuid=True), nullable=True)
+    )
+    source_timestamp_sec: Optional[float] = Field(
+        default=None, sa_column=sa.Column(sa.Numeric(8, 3), nullable=True)
+    )
+
     metadata_json: Optional[dict] = Field(default=None, sa_column=sa.Column("metadata", JSONB, nullable=True))
 
     # 'ready' | 'deleted' | 'expired'
     status: str = Field(default="ready", sa_column=sa.Column(sa.String(32), nullable=False))
+
+    # ---- Brand asset library extension ----
+    # When NULL, this row is a pipeline-produced intermediate (scene
+    # image, voiceover, etc.) — not part of the reusable library.
+    # When set, the matcher pulls this row into asset selection. See
+    # the brand_asset_type taxonomy in PLAN; values are not enforced as
+    # an enum so the taxonomy can grow without a migration.
+    brand_asset_type: Optional[str] = Field(
+        default=None, sa_column=sa.Column(sa.String(32), nullable=True)
+    )
+    # Vision-auto-tagged metadata. Free-form dict — see migration for
+    # the documented shape (mood, dominant_colors, subjects, has_face,
+    # motion_intensity, tags). Admins can edit values directly.
+    brand_asset_tags: Optional[dict] = Field(
+        default=None, sa_column=sa.Column(JSONB, nullable=True)
+    )
+    brand_kit_id: Optional[uuid.UUID] = Field(
+        default=None,
+        sa_column=sa.Column(
+            PGUUID(as_uuid=True),
+            sa.ForeignKey(f"{SCHEMA_NAME}.brand_kits.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+    )
+    auto_tagged_at: Optional[datetime] = Field(
+        default=None, sa_column=sa.Column(sa.DateTime(timezone=True), nullable=True)
+    )
 
     created_at: datetime = Field(
         default_factory=utcnow,

@@ -69,15 +69,61 @@ def materialize_for_scenario(session: Session, scenario: Scenario) -> List[Scene
         ).all()
     }
 
+    # Phase 4 — resolve the per-scene init image S3 keys from the
+    # source reference once, then stamp them onto each new render.
+    # `compute_init_keys` returns one entry per scene_idx; we map by
+    # `scene.get("idx")` so the order in `scenario_json.scenes` drives
+    # the assignment (even when idx values are 1-based or sparse).
+    init_keys_by_scene: dict[int, Optional[str]] = {}
+    try:
+        from app.services import reference_frames as ref_frames_svc
+        from app.models.content_references import ContentReference
+
+        if scenario.reference_id:
+            reference = session.get(ContentReference, scenario.reference_id)
+            if reference is not None:
+                scene_indices = [
+                    s.get("idx") for s in scenes if isinstance(s, dict) and s.get("idx") is not None
+                ]
+                init_keys = ref_frames_svc.compute_init_keys(reference, len(scene_indices))
+                for idx_pos, scene_idx in enumerate(scene_indices):
+                    init_keys_by_scene[scene_idx] = (
+                        init_keys[idx_pos] if idx_pos < len(init_keys) else None
+                    )
+    except Exception:  # noqa: BLE001
+        # Never block render materialization on init-key resolution.
+        # Empty map → renders fall back to pure t2i, same as today.
+        init_keys_by_scene = {}
+
+    # Default img2img strength applied at materialize time. Director
+    # later overrides per-cell via `image_strength`; admins override
+    # per-route via `model_routes.params.image_strength`. The stamp
+    # here just gives the image_gen worker a non-null fallback so it
+    # can choose img2img instead of t2i.
+    try:
+        from app.services.reference_frames import DEFAULT_REFERENCE_STRENGTH
+    except Exception:  # noqa: BLE001
+        DEFAULT_REFERENCE_STRENGTH = 0.55  # type: ignore
+
     created: List[SceneRender] = []
     for scene in scenes:
         idx = scene.get("idx")
         if idx is None:
             continue
+        init_key = init_keys_by_scene.get(idx)
         for aspect in aspect_groups:
             if (idx, aspect) in existing_keys:
                 continue
-            row = SceneRender(scenario_id=scenario.id, scene_idx=idx, aspect_ratio=aspect, status="pending")
+            row = SceneRender(
+                scenario_id=scenario.id,
+                scene_idx=idx,
+                aspect_ratio=aspect,
+                status="pending",
+                init_image_s3_key=init_key,
+                image_strength=(
+                    DEFAULT_REFERENCE_STRENGTH if init_key else None
+                ),
+            )
             session.add(row)
             created.append(row)
     if created:

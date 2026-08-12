@@ -66,6 +66,73 @@ def run(scene_render_id: str, prompt_override: Optional[str] = None) -> dict:
             renders_svc.mark_failed(session, render, "scenario or scenario_json missing")
             return {"ok": False, "error": "scenario missing"}
 
+        # Phase 2 / 2.5 — director's resolved brand asset. Three sub-paths
+        # depending on `image_strength`:
+        #   - strength <= 0.15 → pure PASSTHROUGH (no LLM call, $0)
+        #   - strength >  0.15 → IMG2IMG (Flux i2i with resolved asset
+        #     as init image; the scene's image_prompt nudges it)
+        #   - strength is null → fall through to legacy synth path
+        # The threshold is intentionally low: <=0.15 means "the LLM
+        # thinks this asset already nails the scene"; anything higher
+        # we trust to img2img-remix for the matching scene-specific
+        # variation the prompt describes.
+        if render.resolved_asset_id is not None:
+            resolved = session.get(MediaAsset, render.resolved_asset_id)
+            if resolved is None:
+                renders_svc.mark_failed(
+                    session,
+                    render,
+                    f"resolved_asset_id {render.resolved_asset_id} not found",
+                )
+                renders_svc.recompute_scenario_status_from_renders(session, scenario)
+                return {"ok": False, "error": "resolved asset missing"}
+            strength = (
+                float(render.image_strength) if render.image_strength is not None else None
+            )
+            if strength is None or strength <= 0.15:
+                # Pure passthrough — image_asset_id = brand library asset.
+                render.image_asset_id = resolved.id
+                renders_svc.mark_image_ready(session, render)
+                renders_svc.recompute_scenario_status_from_renders(session, scenario)
+                calls_svc.record(
+                    session,
+                    project_id=scenario.project_id,
+                    scenario_id=scenario.id,
+                    scene_idx=render.scene_idx,
+                    task_key="scene_image",
+                    provider="brand_library",
+                    model_id="director_pick",
+                    cost_usd=0.0,
+                    latency_ms=0,
+                    status_="success",
+                )
+                logger.info(
+                    "image_gen_bypassed_director_pick",
+                    scene_render_id=scene_render_id,
+                    asset_id=str(resolved.id),
+                )
+                return {
+                    "ok": True,
+                    "bypass": "director_pick",
+                    "asset_id": str(resolved.id),
+                }
+            # Img2img remix branch — fall through to synth, but pass the
+            # resolved asset as init. We mark a flag here and let the
+            # standard synth flow run with the extra kwargs below.
+            _init_s3_key = resolved.s3_key
+            _init_strength = strength
+        else:
+            # Phase 4 — img2img-by-default. When `resolved_asset_id` is
+            # NOT set, fall back to the reference frame the materializer
+            # stamped onto `init_image_s3_key`. The default image_gen
+            # path is img2img against the source reference; pure t2i
+            # only runs when no init key exists (e.g. analyzer-less
+            # admin-edited scenarios or extraction-pending reels).
+            _init_s3_key = render.init_image_s3_key
+            _init_strength = (
+                float(render.image_strength) if render.image_strength is not None else None
+            )
+
         scene = _scene_for_idx(scenario, render.scene_idx)
         if scene is None:
             renders_svc.mark_failed(session, render, f"scene_idx {render.scene_idx} not found in scenario_json")
@@ -94,8 +161,39 @@ def run(scene_render_id: str, prompt_override: Optional[str] = None) -> dict:
 
         provider = _build_provider(route.provider)
 
+        # Phase 2.5 + Phase 4 — img2img kwargs. Two paths feed here:
+        #   1. Director picked an asset (Phase 2.5) — strength came from
+        #      the LLM via `scene_renders.image_strength`.
+        #   2. Reference-frame default (Phase 4) — strength came from
+        #      `DEFAULT_REFERENCE_STRENGTH` at materialize time.
+        # In both cases `_init_s3_key` is the S3 key we presign against
+        # `S3_PUBLIC_ENDPOINT` (fal must fetch from a publicly-reachable
+        # host; the internal `minio:9000` is unreachable from fal).
+        i2i_kwargs: dict = {}
+        if _init_s3_key:
+            try:
+                init_url = s3.presigned_get_url(_init_s3_key, ttl=900)
+                i2i_kwargs = {
+                    "init_image_url": init_url,
+                    # When strength is None we let the provider pick its
+                    # own default. For our flow that's effectively the
+                    # `DEFAULT_REFERENCE_STRENGTH` (set at materialize),
+                    # so this guard is just belt-and-braces.
+                    "strength": _init_strength if _init_strength is not None else 0.55,
+                }
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "image_gen_i2i_presign_failed",
+                    scene_render_id=scene_render_id,
+                    error=str(exc),
+                )
+
         try:
-            response = asyncio.run(provider.generate(prompt, route, width=width, height=height))
+            response = asyncio.run(
+                provider.generate(
+                    prompt, route, width=width, height=height, **i2i_kwargs
+                )
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("image_gen_call_failed", scene_render_id=scene_render_id, error=str(exc))
             calls_svc.record(

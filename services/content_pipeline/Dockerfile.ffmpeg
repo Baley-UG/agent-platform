@@ -22,6 +22,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
         ca-certificates \
         ffmpeg \
+        # drawtext overlays (renderer._FONT_FILE points at DejaVuSans-Bold)
+        fonts-dejavu-core \
     && pip install --upgrade pip \
     && pip install uv \
     && rm -rf /var/lib/apt/lists/* \
@@ -37,5 +39,9 @@ COPY . .
 RUN useradd -m appuser && chown -R appuser:appuser /app
 USER appuser
 
-# Render worker only consumes the media_render queue.
-CMD ["python", "-m", "app.worker", "--queues", "media_render"]
+# Render container consumes ffmpeg-bound queues:
+#   - media_render   → compose pipeline (Phase 1)
+#   - frame_extract  → brand-video keyframe pass (Phase 3)
+# Both need the ffmpeg binary baked into this image. Other queues
+# (analyzer, image_gen, etc.) stay on the generic worker.
+CMD ["python", "-m", "app.worker", "--queues", "media_render", "frame_extract"]

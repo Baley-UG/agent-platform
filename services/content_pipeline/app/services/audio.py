@@ -28,6 +28,35 @@ from app.models.music import MusicTrack
 from app.models.scenarios import Scenario
 
 
+def scene_voiceover_texts(scenario: Scenario) -> list[tuple[int, str]]:
+    """Per-scene voiceover lines for the scene-aligned TTS path.
+
+    Returns `[(scene_pos, text), …]` for scenes that HAVE narration,
+    where `scene_pos` is the 0-based position in idx order (matching
+    the render worker's scene ordering). Scenes without narration are
+    skipped — no clip is synthesized for them, and the compose voice
+    bus simply leaves silence over those scenes.
+    """
+    if not scenario.scenario_json:
+        return []
+    scenes = [
+        s
+        for s in (scenario.scenario_json.get("scenes") or [])
+        if isinstance(s, dict) and s.get("idx") is not None
+    ]
+    scenes.sort(key=lambda s: s.get("idx"))
+    out: list[tuple[int, str]] = []
+    for pos, scene in enumerate(scenes):
+        text = (scene.get("voiceover") or "").strip()
+        if text:
+            out.append((pos, text.rstrip(".!?") + "."))
+    return out
+
+
+def scene_voiceover_filename(scenario_id: uuid.UUID, version: int, scene_pos: int) -> str:
+    return f"voiceover-{scenario_id}-v{version}-scene-{scene_pos:02d}.mp3"
+
+
 def build_voiceover_script(scenario: Scenario) -> str:
     """Concatenate scene[*].voiceover into a single TTS-ready string.
 

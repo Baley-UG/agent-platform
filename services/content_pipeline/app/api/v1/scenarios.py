@@ -47,6 +47,16 @@ def _enqueue_analyzer(scenario_id: uuid.UUID) -> Optional[str]:
         return None
 
 
+def _enqueue_director(scenario_id: uuid.UUID) -> Optional[str]:
+    """Push a director job. Soft-fails when Redis is down; admin can
+    retrigger from the panel."""
+    try:
+        job = queue.enqueue("director", "app.workers.director.run", str(scenario_id))
+        return job.id
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _enqueue_image_gen(scene_render_id: uuid.UUID, prompt_override: Optional[str] = None) -> Optional[str]:
     try:
         job = queue.enqueue(
@@ -210,6 +220,43 @@ def start_images(
     pending = [r for r in renders_svc.list_for_scenario(session, scenario.id) if r.status == "pending"]
     for render in pending:
         _enqueue_image_gen(render.id)
+    return ScenarioRead.model_validate(scenario)
+
+
+@router.post(
+    "/{scenario_id}/run-director",
+    response_model=ScenarioRead,
+    summary="Run the director LLM (brand-build mode)",
+)
+def run_director(
+    scenario_id: uuid.UUID,
+    project: Project = Depends(get_project),
+    session: Session = Depends(get_session),
+) -> ScenarioRead:
+    """Phase 2 — pick brand assets to fill each scene.
+
+    Materializes `scene_renders` (idempotent) and enqueues the
+    director worker. Worker writes `resolved_asset_id` + `match_reason`
+    onto each cell asynchronously; the panel polls /progress to see
+    the picks land. Subsequent `start-images` will SKIP synthesis for
+    any cell that has a resolved_asset_id.
+
+    Allowed in `pending_review` and `approved` — director output is
+    just a starting point; admin can rerun or fall through to AI.
+    """
+    scenario = svc.get(session, project.id, scenario_id)
+    if scenario.status not in ("pending_review", "approved"):
+        from fastapi import HTTPException, status as http_status
+
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT,
+            detail=(
+                f"director can only run while scenario is in "
+                f"pending_review or approved (status={scenario.status})"
+            ),
+        )
+    renders_svc.materialize_for_scenario(session, scenario)
+    _enqueue_director(scenario.id)
     return ScenarioRead.model_validate(scenario)
 
 

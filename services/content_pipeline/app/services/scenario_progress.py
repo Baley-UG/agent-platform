@@ -14,12 +14,24 @@ from typing import List
 from sqlalchemy import func
 from sqlmodel import Session, select
 
+from app.core import s3 as s3lib
+from app.core.logging import logger
 from app.models.generation_calls import GenerationCall
 from app.models.media_assets import MediaAsset
 from app.models.render_variants import RenderVariant
 from app.models.scene_renders import SceneRender
 from app.models.scenarios import Scenario
 from app.services import scenarios as scenarios_svc
+
+
+def _signed_url(s3_key: str) -> str | None:
+    """Short-lived presigned GET. Returns None on failure rather than
+    raising — the panel falls back to "no thumb"."""
+    try:
+        return s3lib.presigned_get_url(s3_key, ttl=900)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("progress_presign_failed", key=s3_key, error=str(exc))
+        return None
 
 
 def build(session: Session, scenario: Scenario) -> dict:
@@ -42,6 +54,25 @@ def build(session: Session, scenario: Scenario) -> dict:
                 "aspect_ratio": r.aspect_ratio,
                 "image_asset_id": str(r.image_asset_id) if r.image_asset_id else None,
                 "video_asset_id": str(r.video_asset_id) if r.video_asset_id else None,
+                # Phase 2 — director output. When set, the image_gen
+                # worker bypasses synthesis and reuses this brand asset.
+                "resolved_asset_id": str(r.resolved_asset_id) if r.resolved_asset_id else None,
+                "match_reason": r.match_reason,
+                # Phase 2.5 — img2img remix strength. None = legacy
+                # synth path. <=0.15 = pure passthrough. >0.15 = i2i.
+                "image_strength": (
+                    float(r.image_strength) if r.image_strength is not None else None
+                ),
+                # Phase 4 — surface the init image so the panel can
+                # render a small thumb on the scene card ("seeded from
+                # this reference frame"). Server-side presign keeps the
+                # browser from making N extra HTTP calls.
+                "init_image_s3_key": r.init_image_s3_key,
+                "init_image_url": (
+                    _signed_url(r.init_image_s3_key)
+                    if r.init_image_s3_key
+                    else None
+                ),
                 "status": r.status,
                 "error": r.error,
             }

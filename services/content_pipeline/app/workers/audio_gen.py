@@ -75,12 +75,6 @@ def run(
             logger.warning("audio_gen_scenario_missing", scenario_id=scenario_id)
             return {"ok": False, "error": "scenario not found"}
 
-        # Build script (or use override).
-        text = (text_override or audio.build_voiceover_script(scenario)).strip()
-        if not text:
-            scenarios_svc.mark_failed(session, scenario, "voiceover script is empty")
-            return {"ok": False, "error": "empty script"}
-
         voice_id = _resolve_voice_id(session, scenario, voice_id_override)
         if not voice_id:
             scenarios_svc.mark_failed(
@@ -95,6 +89,26 @@ def run(
             return {"ok": False, "error": str(exc)}
 
         provider = _build_provider(route.provider)
+
+        # Two synthesis modes:
+        #   * SCENE-ALIGNED (default): one TTS clip per narrated scene.
+        #     Compose delays each clip to its scene's start so speech
+        #     lands exactly on its scene. Clips are media_assets rows
+        #     with type='voiceover_scene' + parent_scene_idx.
+        #   * LEGACY single-file: forced by `text_override` (admin gave
+        #     one continuous script — per-scene split would be wrong).
+        scene_lines = [] if text_override else audio.scene_voiceover_texts(scenario)
+
+        if scene_lines:
+            return _run_per_scene(
+                session, scenario, provider, route, voice_id, scene_lines
+            )
+
+        # ---- Legacy single-file path ----
+        text = (text_override or audio.build_voiceover_script(scenario)).strip()
+        if not text:
+            scenarios_svc.mark_failed(session, scenario, "voiceover script is empty")
+            return {"ok": False, "error": "empty script"}
 
         try:
             response = asyncio.run(
@@ -115,8 +129,6 @@ def run(
             scenarios_svc.mark_failed(session, scenario, str(exc))
             return {"ok": False, "error": str(exc)}
 
-        # Upload bytes.
-        ext = "mp3" if response.mime_type.startswith("audio/mpeg") else "audio"
         key = s3.make_key(
             scenario.project_id,
             "audio",
@@ -160,15 +172,7 @@ def run(
             )
 
         scenario.voiceover_asset_id = new_asset.id
-
-        # Auto-pick a music track if none chosen yet.
-        if scenario.music_track_id is None:
-            track = audio.select_music_for_scenario(session, scenario)
-            if track is not None:
-                scenario.music_track_id = track.id
-
-        session.add(scenario)
-        session.flush()
+        _pick_music_and_finish(session, scenario)
 
         calls_svc.record(
             session,
@@ -196,3 +200,151 @@ def run(
             "cost_usd": response.cost_usd,
             "char_count": len(text),
         }
+
+
+def _pick_music_and_finish(session, scenario: Scenario) -> None:
+    """Auto-pick a music track if none chosen yet, persist the scenario."""
+    if scenario.music_track_id is None:
+        track = audio.select_music_for_scenario(session, scenario)
+        if track is not None:
+            scenario.music_track_id = track.id
+    session.add(scenario)
+    session.flush()
+
+
+def _run_per_scene(
+    session,
+    scenario: Scenario,
+    provider: TTSProvider,
+    route,
+    voice_id: str,
+    scene_lines: list[tuple[int, str]],
+) -> dict:
+    """Scene-aligned TTS: one clip per narrated scene.
+
+    Prior clips for this scenario version get superseded via the
+    media_assets replace-chain keyed on `(parent_scenario_id,
+    parent_scene_idx, type='voiceover_scene')`. Any single scene's TTS
+    failure fails the whole run (conservative — matching image_gen's
+    rollup rule).
+
+    `scenario.voiceover_asset_id` is pointed at the FIRST clip so
+    downstream "has voiceover" checks (pipeline actions, /progress
+    voiceover block) stay truthy without schema changes.
+    """
+    total_cost = 0.0
+    total_chars = 0
+    clip_assets: list[MediaAsset] = []
+
+    # Prior active clips per scene_pos, for versioned replacement.
+    prior_by_pos: dict[int, MediaAsset] = {}
+    for row in session.exec(
+        select(MediaAsset).where(
+            MediaAsset.parent_scenario_id == scenario.id,
+            MediaAsset.type == "voiceover_scene",
+            MediaAsset.replaced_by_id.is_(None),
+        )
+    ).all():
+        if row.parent_scene_idx is not None:
+            prior_by_pos[row.parent_scene_idx] = row
+
+    for scene_pos, text in scene_lines:
+        try:
+            response = asyncio.run(provider.synthesize(text, route, voice_id=voice_id))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "audio_gen_scene_call_failed",
+                scenario_id=str(scenario.id),
+                scene_pos=scene_pos,
+                error=str(exc),
+            )
+            calls_svc.record(
+                session,
+                project_id=scenario.project_id,
+                scenario_id=scenario.id,
+                task_key="voiceover_tts",
+                provider=route.provider,
+                model_id=route.model_id,
+                status_="failed",
+                error=str(exc)[:1000],
+            )
+            scenarios_svc.mark_failed(session, scenario, f"scene {scene_pos} TTS: {exc}")
+            return {"ok": False, "error": str(exc), "scene_pos": scene_pos}
+
+        key = s3.make_key(
+            scenario.project_id,
+            "audio",
+            audio.scene_voiceover_filename(scenario.id, scenario.version, scene_pos),
+        )
+        s3.upload_bytes(key, response.audio_bytes, content_type=response.mime_type)
+
+        metadata = {
+            "model_id": route.model_id,
+            "voice_id": voice_id,
+            "char_count": len(text),
+            "provider": route.provider,
+            "scene_pos": scene_pos,
+        }
+        prior = prior_by_pos.get(scene_pos)
+        if prior is not None:
+            asset = media_svc.replace(
+                session,
+                prior,
+                s3_key=key,
+                mime_type=response.mime_type,
+                size_bytes=len(response.audio_bytes),
+                duration_sec=response.duration_sec,
+                metadata=metadata,
+            )
+        else:
+            asset = media_svc.create_initial(
+                session,
+                project_id=scenario.project_id,
+                type_="voiceover_scene",
+                s3_key=key,
+                mime_type=response.mime_type,
+                size_bytes=len(response.audio_bytes),
+                duration_sec=response.duration_sec,
+                parent_scenario_id=scenario.id,
+                parent_scene_idx=scene_pos,
+                metadata=metadata,
+            )
+        clip_assets.append(asset)
+
+        total_cost += response.cost_usd or 0.0
+        total_chars += len(text)
+        calls_svc.record(
+            session,
+            project_id=scenario.project_id,
+            scenario_id=scenario.id,
+            task_key="voiceover_tts",
+            provider=route.provider,
+            model_id=route.model_id,
+            request_id=response.request_id,
+            audio_seconds=response.duration_sec,
+            unit_count=len(text),
+            cost_usd=response.cost_usd,
+            latency_ms=response.latency_ms,
+            status_="success",
+        )
+
+    # Keep legacy pointers truthy for downstream checks.
+    scenario.voiceover_asset_id = clip_assets[0].id if clip_assets else None
+    _pick_music_and_finish(session, scenario)
+    scenarios_svc.mark_audio_ready(session, scenario)
+
+    logger.info(
+        "audio_gen_per_scene_done",
+        scenario_id=str(scenario.id),
+        clips=len(clip_assets),
+        cost_usd=total_cost,
+    )
+    return {
+        "ok": True,
+        "scenario_id": str(scenario.id),
+        "mode": "per_scene",
+        "clips": len(clip_assets),
+        "music_track_id": str(scenario.music_track_id) if scenario.music_track_id else None,
+        "cost_usd": total_cost,
+        "char_count": total_chars,
+    }

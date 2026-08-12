@@ -30,7 +30,14 @@ class ImageResponse:
 
 
 class ImageProvider(ABC):
-    """Abstract T2I provider."""
+    """Abstract image provider — handles both T2I and I2I.
+
+    Concrete providers may switch model endpoint internally based on
+    whether `init_image_url` is set (Flux dev → `image-to-image`,
+    SDXL → `img2img`, etc.). Providers that don't support I2I should
+    raise rather than silently fall back to T2I — the caller wants the
+    semantic guarantee that strength was applied.
+    """
 
     @abstractmethod
     async def generate(
@@ -42,5 +49,12 @@ class ImageProvider(ABC):
         height: int,
         negative_prompt: Optional[str] = None,
         seed: Optional[int] = None,
+        init_image_url: Optional[str] = None,
+        strength: Optional[float] = None,
     ) -> ImageResponse:
-        """Run a single text-to-image call. Returns bytes — caller writes to S3."""
+        """Single image generation call. Returns raw bytes; caller writes to S3.
+
+        - `init_image_url`: when set, run image-to-image (provider hits
+          the i2i variant of the route's model). When None, pure T2I.
+        - `strength`: 0..1 remix amount. Only meaningful for I2I.
+        """

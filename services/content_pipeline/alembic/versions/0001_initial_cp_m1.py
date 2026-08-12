@@ -217,14 +217,73 @@ def upgrade() -> None:
         sa.Column("version", sa.Integer, nullable=False, server_default="1"),
         sa.Column("previous_version_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column("replaced_by_id", postgresql.UUID(as_uuid=True), nullable=True),
+        # Phase 3 — frame provenance. When a row was extracted from a
+        # parent video asset (ffmpeg keyframe pass), `source_asset_id`
+        # points to the parent and `source_timestamp_sec` records where
+        # in the video the frame came from. The director uses these to
+        # surface the frame in the asset library; compose can later
+        # decide to cut the SEGMENT around `source_timestamp_sec` from
+        # the parent video instead of using the still frame.
+        sa.Column(
+            "source_asset_id",
+            postgresql.UUID(as_uuid=True),
+            # Self-ref FK declared at table-definition end via ALTER TABLE
+            # would be cleaner; for MVP we leave it as a soft pointer.
+            # `ON DELETE SET NULL` semantics enforced application-side.
+            nullable=True,
+        ),
+        sa.Column("source_timestamp_sec", sa.Numeric(8, 3), nullable=True),
         sa.Column("metadata", postgresql.JSONB, nullable=True),
         sa.Column("status", sa.String(32), nullable=False, server_default="ready"),
+        # Brand-asset library extension. When set, this media_asset is
+        # part of the brand's reusable asset pool (uploaded by admin or
+        # promoted from a published variant). The director LLM matches
+        # scene requirements against this pool BEFORE falling back to
+        # AI synthesis. NULL means "pipeline-produced intermediate"
+        # (scene image, voiceover, etc.) — not part of the library.
+        sa.Column("brand_asset_type", sa.String(32), nullable=True),
+        # Vision-auto-tagged metadata. Free-form dict so we can extend
+        # the taxonomy without a migration. Typical shape:
+        #   {
+        #     "mood": "luxe" | "energetic" | ...,
+        #     "dominant_colors": ["#hex", ...],
+        #     "subjects": ["bottle", "hand", "logo"],
+        #     "has_face": true | false,
+        #     "motion_intensity": "still" | "slow" | "energetic"  (videos),
+        #     "tags": [free-form admin labels]
+        #   }
+        sa.Column("brand_asset_tags", postgresql.JSONB, nullable=True),
+        sa.Column(
+            "brand_kit_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey(f"{SCHEMA}.brand_kits.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+        # Set when the vision auto-tagger finishes. NULL = pending tag,
+        # admin sees a "Re-tag" hint on the asset card.
+        sa.Column("auto_tagged_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         schema=SCHEMA,
     )
     op.create_index("ix_media_assets_project_type", "media_assets", ["project_id", "type"], schema=SCHEMA)
     op.create_index("ix_media_assets_scenario", "media_assets", ["parent_scenario_id"], schema=SCHEMA)
     op.create_index("ix_media_assets_replaced_by", "media_assets", ["replaced_by_id"], schema=SCHEMA)
+    # Phase 3 — fast "give me all extracted frames of this video" lookup.
+    op.create_index(
+        "ix_media_assets_source_asset",
+        "media_assets",
+        ["source_asset_id", "source_timestamp_sec"],
+        schema=SCHEMA,
+        postgresql_where=sa.text("source_asset_id IS NOT NULL"),
+    )
+    # Brand library lookup: scoped by (kit, type) for matcher queries.
+    op.create_index(
+        "ix_media_assets_brand_kit_type",
+        "media_assets",
+        ["brand_kit_id", "brand_asset_type"],
+        schema=SCHEMA,
+        postgresql_where=sa.text("brand_asset_type IS NOT NULL"),
+    )
 
     # ------------------------------------------------------------------
     # model_routes

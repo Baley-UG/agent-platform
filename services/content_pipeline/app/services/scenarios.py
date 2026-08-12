@@ -267,6 +267,7 @@ def create(
         target_variants=variants,
         target_aspect_groups=_derive_aspect_groups(variants),
         quality_tier=payload.quality_tier,
+        production_mode=getattr(payload, "production_mode", "recreate"),
         default_caption=seeded_caption,
         default_hashtags=seeded_hashtags,
         created_by=created_by,

@@ -23,10 +23,21 @@ from app.core.metrics import cp_jobs_total
 # on CPU. Generous defaults; tune via env later if needed.
 _QUEUE_TIMEOUTS = {
     "analyzer": 600,        # vision LLM with multi-image inputs
+    # Brand-asset auto-tagging — one vision LLM call per asset, no
+    # async polling. 5-10s typical; 5min cap for tail latency.
+    "brand_asset_tag": 300,
+    # Director — one BIG vision LLM call: reference frames + ~20 brand
+    # asset thumbs in a single prompt. Heavier than the tagger; 10min
+    # cap for tail latency on slow models.
+    "director": 600,
     "image_gen": 600,       # fal.ai async polling
     "video_gen": 900,       # Seedance image-to-video (long polls)
     "audio_gen": 300,       # ElevenLabs TTS
     "media_render": 1800,   # ffmpeg compose — slowest stage
+    # Phase 3 — ffmpeg keyframe extraction. Fast for short reels
+    # (5-30s typical, completes in 5-15s) but scene-detect on a long
+    # video can chew minutes. 20min cap.
+    "frame_extract": 1200,
     "publish": 900,         # IG/TT container polling
     "planner": 300,
 }

@@ -24,9 +24,21 @@ from rq import Queue, Worker
 from app.core.config import settings
 from app.core.logging import logger
 
-# Default queues consumed by the generic worker.
-DEFAULT_QUEUES = ["analyzer", "image_gen", "video_gen", "audio_gen", "publish", "planner"]
-ALL_QUEUES = DEFAULT_QUEUES + ["media_render"]
+# Default queues consumed by the generic worker. `brand_asset_tag` is
+# a lightweight vision-LLM job (Phase 1 brand asset library); piggybacks
+# on the generic worker so admins don't have to provision yet another
+# container.
+DEFAULT_QUEUES = [
+    "analyzer",
+    "brand_asset_tag",
+    "director",
+    "image_gen",
+    "video_gen",
+    "audio_gen",
+    "publish",
+    "planner",
+]
+ALL_QUEUES = DEFAULT_QUEUES + ["media_render", "frame_extract"]
 
 
 def _parse_args(argv: List[str]) -> argparse.Namespace:

@@ -110,6 +110,93 @@ def _scene_image_inputs_for_variant(
     return keys, durations
 
 
+def _texts_and_transitions(
+    scenario: Scenario,
+) -> tuple[list["renderer_svc.SceneText"], list[str]]:
+    """Pull per-scene on-screen text + transition_out from scenario_json.
+
+    Returns `(scene_texts, scene_transitions)`:
+      - `scene_texts` — one SceneText per scene that HAS text, carrying
+        both the concatenated-timeline window (video pipeline) and the
+        0-based `scene_pos` (slideshow pipeline).
+      - `scene_transitions` — transition_out per scene in render order;
+        "cut" default. The slideshow xfade chain reads boundary i from
+        transitions[i].
+
+    Timeline windows accumulate scene durations in idx order. When a
+    scene is missing a duration we assume 3s (matches the slideshow
+    fallback) so a single bad scene doesn't shift every later window
+    to garbage.
+    """
+    scenes = (scenario.scenario_json or {}).get("scenes") or []
+    ordered = sorted(
+        (s for s in scenes if isinstance(s, dict) and s.get("idx") is not None),
+        key=lambda s: s.get("idx"),
+    )
+
+    texts: list[renderer_svc.SceneText] = []
+    transitions: list[str] = []
+    elapsed = 0.0
+    for pos, scene in enumerate(ordered):
+        try:
+            duration = float(scene.get("duration") or 0) or 3.0
+        except (TypeError, ValueError):
+            duration = 3.0
+        text = (scene.get("on_screen_text") or "").strip()
+        if text:
+            texts.append(
+                renderer_svc.SceneText(
+                    text=text,
+                    style=(scene.get("text_style") or "bold_white").strip() or "bold_white",
+                    start_sec=elapsed,
+                    end_sec=elapsed + duration,
+                    scene_pos=pos,
+                )
+            )
+        transitions.append((scene.get("transition_out") or "cut").strip() or "cut")
+        elapsed += duration
+
+    return texts, transitions
+
+
+def _scene_voiceovers(session, scenario: Scenario) -> list["renderer_svc.SceneVoiceover"]:
+    """Active per-scene TTS clips, in scene order. Empty list when the
+    scenario was voiced via the legacy single-file path."""
+    rows = session.exec(
+        select(MediaAsset)
+        .where(
+            MediaAsset.parent_scenario_id == scenario.id,
+            MediaAsset.type == "voiceover_scene",
+            MediaAsset.replaced_by_id.is_(None),
+        )
+        .order_by(MediaAsset.parent_scene_idx)
+    ).all()
+    return [
+        renderer_svc.SceneVoiceover(s3_key=r.s3_key, scene_pos=r.parent_scene_idx or 0)
+        for r in rows
+        if r.s3_key
+    ]
+
+
+def _outro_key(session, scenario: Scenario) -> Optional[str]:
+    """Project outro template video, when one exists.
+
+    Convention: `templates.kind == 'outro'` (newest wins). Projects
+    without an outro template just skip the append pass.
+    """
+    from app.models.templates import Template
+
+    row = session.exec(
+        select(Template)
+        .where(
+            Template.project_id == scenario.project_id,
+            Template.kind == "outro",
+        )
+        .order_by(Template.created_at.desc())
+    ).first()
+    return row.video_s3_key if row and getattr(row, "video_s3_key", None) else None
+
+
 def _voiceover_key(session, scenario: Scenario) -> Optional[str]:
     if scenario.voiceover_asset_id is None:
         return None
@@ -269,12 +356,38 @@ def run(variant_id: str) -> dict:
             variants_svc.recompute_scenario_status_from_variants(session, scenario)
             return {"ok": False, "error": str(exc)}
 
+        scene_texts, scene_transitions = _texts_and_transitions(scenario)
+
+        # Scene-aligned voiceover clips take precedence; the legacy
+        # single-file key is only passed when no clips exist (passing
+        # both would double the first scene's audio — the scenario's
+        # voiceover_asset_id points at clip 0 in per-scene mode).
+        scene_voiceovers = _scene_voiceovers(session, scenario)
+
+        # The reel pipeline needs scene durations too now — voice-bus
+        # offsets are computed from them (slideshow already had them).
+        if not scene_durations:
+            scenes_json = (scenario.scenario_json or {}).get("scenes") or []
+            ordered = sorted(
+                (s for s in scenes_json if isinstance(s, dict) and s.get("idx") is not None),
+                key=lambda s: s.get("idx"),
+            )
+            for s in ordered:
+                try:
+                    scene_durations.append(float(s.get("duration") or 0) or 3.0)
+                except (TypeError, ValueError):
+                    scene_durations.append(3.0)
+
         inputs = renderer_svc.ComposeInputs(
             scene_video_keys=scene_video_keys,
             scene_image_keys=scene_image_keys,
             scene_durations_sec=scene_durations,
-            voiceover_key=_voiceover_key(session, scenario),
+            scene_texts=scene_texts,
+            scene_transitions=scene_transitions,
+            scene_voiceovers=scene_voiceovers,
+            voiceover_key=None if scene_voiceovers else _voiceover_key(session, scenario),
             music_key=_music_key(session, scenario),
+            outro_video_key=_outro_key(session, scenario),
         )
 
         variants_svc.mark_composing(session, variant)

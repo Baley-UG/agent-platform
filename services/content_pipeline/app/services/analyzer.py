@@ -34,27 +34,46 @@ produce a production script (a "scenario") for the platform's content team.
 
 The attached image(s) are the SOURCE OF TRUTH. The caption is supporting context only.
 
-## How close to copy the source
+## IMPORTANT — the image generator runs IMG2IMG, not text-to-image
 
-Treat each image like a frame the production team has to recreate. The `image_prompt`
-for that scene must:
+Downstream, each scene's `image_prompt` is fed to Flux's **image-to-image**
+endpoint with the matching source frame as the INIT IMAGE. The model
+already has the composition, lighting, palette, subject pose, era, props
+from the init frame — your prompt's job is to describe **what should
+CHANGE**, not to re-describe the whole scene.
 
-  * Describe THE SAME SUBJECT category (person/object) doing THE SAME ACTION (or
-    static pose) in THE SAME SETTING TYPE (living room, beach, kitchen, UI mockup, etc.).
-  * Preserve the source's composition: same shot scale (wide / close-up / POV / top-down),
-    same camera angle, same lighting direction and mood, same color palette, same era /
-    aesthetic, same on-screen text style (if any). Match the visible props.
-  * The ONLY allowed differences are minimal substitutions for copyright safety:
-      - Different specific person (face / clothing); same age range, same activity.
-      - Different brand-name product if a logo is visible; same generic product category.
-      - Different exact words for on-screen text; same length, position, style, message
-        intent. (Example: source says "Save this for later" → you may use "Bookmark this"
-        but you may NOT change it to "Comment below" — the function changes.)
-  * Do NOT add elements the image does not contain (do not invent cassettes, board games,
-    sprinklers, etc. just because the caption is "nostalgic" — if the image shows a kid
-    drawing at a window, that's the scene).
-  * Do NOT remove elements the image clearly contains (if the image has a text overlay,
-    your scene also has on-screen text).
+## How to write `image_prompt`
+
+  * Lead with the kept-from-source nouns ("same girl, same living room,
+    same warm window light") so the model stays anchored.
+  * Then list THE DELTAS — only the elements that should look different.
+    Examples:
+      - "...lift the hand higher into frame, glass tilted toward camera"
+      - "...recolor the wall behind her to cream, keep the warm rim light"
+      - "...replace the brand-name cereal box with a generic muesli pouch"
+  * Keep it short. 1-3 sentences max. Img2img is sensitive to long
+    prompts — the more you write, the harder it remixes away from the
+    init frame.
+  * Do NOT describe a from-scratch composition. The model already SEES
+    the frame; writing "cinematic close-up of a hand pouring coffee
+    onto..." overrides what's there and produces hallucinated drift.
+  * Do NOT include camera lens jargon ("85mm", "f/1.4") unless the source
+    already has that look you want to keep. Generic style tags
+    ("cinematic", "documentary") are fine when the source matches them.
+  * The ONLY allowed substitutions (for copyright / brand safety):
+      - Specific person → same age/role/activity, different face/outfit.
+      - Brand-name product → generic version of the same category.
+      - On-screen text → different exact words; same length / position /
+        message intent. (Source "Save for later" → "Bookmark this" OK;
+        "Comment below" NOT — function changed.)
+  * Do NOT add elements the source image doesn't contain.
+  * Do NOT remove elements the source image clearly contains.
+
+## How to write `motion_prompt` (for the video stage)
+
+  * Same delta principle, but for motion. "slow push-in, hold the hand
+    raise". NOT a full new shot description.
+  * "static" is a valid value when the scene shouldn't move.
 
 ## Scene count vs slides
 
@@ -162,7 +181,7 @@ When the genre is text-on-screen (educational lists, swipe carousels), voiceover
       "duration": number,                              // seconds
       "shot_type": string,                             // "wide" | "medium" | "close_up" | "extreme_close_up"
                                                        //  | "pov" | "over_shoulder" | "top_down" | "tracking"
-      "image_prompt": string,                          // standalone T2I prompt: subject + setting + lighting + style
+      "image_prompt": string,                          // DELTA prompt for img2img — kept-from-source + only the differences
       "motion_prompt": string,                         // I2V motion (minimal for photo/carousel)
       "on_screen_text": string,                        // empty when none; ≤ 50 chars; ≤ 7 words
       "text_style": string,                            // "bold_white" | "subtle_caption" | "kinetic_typography"
@@ -178,9 +197,9 @@ When the genre is text-on-screen (educational lists, swipe carousels), voiceover
 # 9. HARD RULES
 
 - Sum of `scene.duration` ≈ `duration_sec` within ±0.5 seconds.
-- `image_prompt` must work as a standalone Stable-Diffusion / Flux prompt — include
-  subject, setting, lighting cue, and a one-word style (e.g. "cinematic", "documentary",
-  "studio commercial", "vintage film").
+- `image_prompt` is a DELTA prompt for img2img — see § 0. It is NOT a standalone
+  scene description. The downstream Flux call already has the source frame as init.
+- Keep `image_prompt` short (1-3 sentences). Long prompts cause img2img drift.
 - `hook` is a SCRIPT line (what the viewer hears or reads), not a description of what
   happens. e.g. "Stop scrolling — this is what 90% of people get wrong about X"
   NOT "we open with a fast cut and the host looking surprised".

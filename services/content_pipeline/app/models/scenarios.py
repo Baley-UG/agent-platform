@@ -109,6 +109,19 @@ class Scenario(SQLModel, table=True):
 
     last_error: Optional[str] = Field(default=None, sa_column=sa.Column(sa.Text, nullable=True))
 
+    # CP-Phase 2 — production mode picks which pipeline orchestrates this
+    # scenario. Defaults to 'recreate' (legacy: analyzer + image_gen +
+    # ffmpeg). 'brand_build' runs the director LLM against the brand
+    # asset library and assembles scenes from existing brand media —
+    # AI synth only as gap filler. 'inspire' produces only the hook +
+    # CTA + structure notes, no visual production at all.
+    production_mode: str = Field(
+        default="recreate",
+        sa_column=sa.Column(
+            sa.String(16), nullable=False, server_default="recreate"
+        ),
+    )
+
     created_by: Optional[str] = Field(default=None, sa_column=sa.Column(sa.String(64), nullable=True))
     created_at: datetime = Field(
         default_factory=utcnow,

@@ -47,6 +47,70 @@ def upgrade() -> None:
         schema=SCHEMA,
     )
 
+    # CP-Phase 2 — production mode (recreate | brand_build | inspire).
+    # `recreate` keeps the existing analyzer + image_gen + ffmpeg path.
+    # `brand_build` runs the director LLM against the brand asset
+    # library. `inspire` skips visual production entirely.
+    op.add_column(
+        "scenarios",
+        sa.Column(
+            "production_mode",
+            sa.String(16),
+            nullable=False,
+            server_default="recreate",
+        ),
+        schema=SCHEMA,
+    )
+
+    # Director-resolved brand asset per scene_render cell. NULL means
+    # "fall through to AI synth" (image_gen worker generates the image).
+    # `match_reason` is the LLM's short explanation, surfaced in the
+    # panel so admin can sanity-check the director's picks.
+    op.add_column(
+        "scene_renders",
+        sa.Column(
+            "resolved_asset_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey(f"{SCHEMA}.media_assets.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+        schema=SCHEMA,
+    )
+    op.add_column(
+        "scene_renders",
+        sa.Column("match_reason", sa.Text, nullable=True),
+        schema=SCHEMA,
+    )
+
+    # Phase 2.5 — per-cell img2img remix strength. 0 keeps the
+    # resolved_asset_id as-is (pure passthrough); >0.15 routes through
+    # fal's image-to-image endpoint with the resolved asset as the
+    # init image. The director LLM proposes this value per scene
+    # (low for product hero shots that should stay faithful, higher
+    # for atmospheric scenes that can be remixed for variety).
+    op.add_column(
+        "scene_renders",
+        sa.Column("image_strength", sa.Numeric(3, 2), nullable=True),
+        schema=SCHEMA,
+    )
+
+    # Phase 4 — img2img-by-default. When the scenario is in
+    # `recreate` mode (legacy AI-synth), the image_gen worker now
+    # seeds each scene with the REFERENCE's matching frame:
+    #   - photo source  → the single reference image (same for all)
+    #   - carousel      → slide[scene_idx % len(slides)]
+    #   - reel/video    → keyframe[scene_idx] extracted at import
+    # The text prompt then describes the DELTA from that init frame
+    # rather than from-scratch. `init_image_s3_key` is the S3 key
+    # `image_gen` presigns at call time. Director-resolved cells
+    # (Phase 2.5) use `resolved_asset_id` instead; the two paths are
+    # mutually exclusive.
+    op.add_column(
+        "scene_renders",
+        sa.Column("init_image_s3_key", sa.String(512), nullable=True),
+        schema=SCHEMA,
+    )
+
     # Reference dedup (CP-M8). Stored as bytea to avoid hard pgvector dep;
     # the perceptual hash compare is byte-distance so this is sufficient.
     # Embedding is reserved for future cosine similarity (admin opts in to

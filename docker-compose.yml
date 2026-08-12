@@ -8,7 +8,10 @@ services:
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
     ports:
-      - "5432:5432"
+      # Host port is overridable because other local stacks (e.g.
+      # loofers-app-server) commonly hold 5432. In-network services
+      # always reach the DB at db:5432 regardless of this mapping.
+      - "${POSTGRES_HOST_PORT:-5434}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
