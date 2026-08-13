@@ -194,7 +194,9 @@ def validate_id_token(id_token: str, *, nonce: str) -> dict:
             id_token,
             jwks,
             claims_options={
-                "iss": {"essential": True, "value": settings.OIDC_ISSUER},
+                # Authentik emits `iss` with a trailing slash; config strips it
+                # from OIDC_ISSUER for URL building — accept both forms.
+                "iss": {"essential": True, "values": [settings.OIDC_ISSUER, settings.OIDC_ISSUER + "/"]},
                 "aud": {"essential": True, "value": settings.OIDC_CLIENT_ID},
                 "exp": {"essential": True},
             },
