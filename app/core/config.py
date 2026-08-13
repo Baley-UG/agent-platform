@@ -182,6 +182,40 @@ class Settings:
         # First admin is created via the CLI, not env. See:
         #   docker compose exec app python -m app.cli create-admin --email <...>
 
+        # ---- OIDC SSO (Authentik) --------------------------------------
+        # Company-central login. When OIDC_ISSUER + OIDC_CLIENT_ID are set
+        # the panel shows a "Sign in with SSO" button; password login stays
+        # available for the bootstrap/service accounts. SSO-created users
+        # never get a local password.
+        # Discovery: <OIDC_ISSUER>/.well-known/openid-configuration
+        self.OIDC_ISSUER = os.getenv("OIDC_ISSUER", "").rstrip("/")
+        self.OIDC_CLIENT_ID = os.getenv("OIDC_CLIENT_ID", "")
+        self.OIDC_CLIENT_SECRET = os.getenv("OIDC_CLIENT_SECRET", "")
+        # Must exactly match the redirect URI registered in Authentik:
+        #   <APP_URL>/auth/callback
+        self.OIDC_REDIRECT_URI = os.getenv("OIDC_REDIRECT_URI", "")
+        self.OIDC_SCOPES = os.getenv("OIDC_SCOPES", "openid profile email")
+        # Membership in this Authentik group grants role='admin'; everyone
+        # else lands as 'member'. Read from the `groups` claim.
+        self.OIDC_ADMIN_GROUP = os.getenv("OIDC_ADMIN_GROUP", "baley-admins")
+        # Where the browser goes after login/logout completes.
+        self.ADMIN_PANEL_URL = os.getenv("ADMIN_PANEL_URL", "http://localhost:3000").rstrip("/")
+        self.OIDC_POST_LOGOUT_REDIRECT_URI = os.getenv(
+            "OIDC_POST_LOGOUT_REDIRECT_URI", f"{self.ADMIN_PANEL_URL}/auth/login"
+        )
+        # Hard session ceiling for SSO logins (HttpOnly cookie TTL and the
+        # embedded JWT expiry both use this).
+        self.OIDC_SESSION_MAX_HOURS = int(os.getenv("OIDC_SESSION_MAX_HOURS", "8"))
+        # Secure cookies require HTTPS; default on outside development.
+        self.OIDC_COOKIE_SECURE = os.getenv(
+            "OIDC_COOKIE_SECURE",
+            "false" if self.ENVIRONMENT.value == "development" else "true",
+        ).lower() in ("true", "1", "t", "yes")
+        # Feature flag derived from the three required settings.
+        self.OIDC_ENABLED = bool(
+            self.OIDC_ISSUER and self.OIDC_CLIENT_ID and self.OIDC_REDIRECT_URI
+        )
+
         # Downstream microservice URLs + service token (X-API-Key).
         # Admin panel calls main app only; main app proxies to these.
         self.CONTENT_PIPELINE_URL = os.getenv("CONTENT_PIPELINE_URL", "http://content-pipeline-api:8082")

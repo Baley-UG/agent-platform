@@ -7,6 +7,7 @@ endpoints like authentication and chatbot functionality.
 from fastapi import APIRouter
 
 from app.api.v1.admin_auth import router as admin_auth_router
+from app.api.v1.admin_oidc import router as admin_oidc_router
 from app.api.v1.admin_gateway import router as admin_gateway_router
 from app.api.v1.admin_projects import router as admin_projects_router
 from app.api.v1.admin_users import membership_router as admin_membership_router
@@ -27,6 +28,7 @@ api_router.include_router(slack_router, prefix="/slack", tags=["slack"])
 
 # CP-M9 admin panel routers (auth + users + memberships + projects)
 api_router.include_router(admin_auth_router)
+api_router.include_router(admin_oidc_router)
 api_router.include_router(admin_users_router)
 api_router.include_router(admin_membership_router)
 # Project entity CRUD lives in main app (table is public.projects);

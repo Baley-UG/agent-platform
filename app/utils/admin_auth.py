@@ -30,11 +30,18 @@ def _check_secret() -> None:
         raise RuntimeError("ADMIN_JWT_SECRET (or JWT_SECRET_KEY fallback) is empty")
 
 
-def issue_access_token(user_id: int, role: str) -> Tuple[str, datetime]:
-    """Returns (jwt_string, expires_at)."""
+def issue_access_token(
+    user_id: int, role: str, ttl_minutes: int | None = None
+) -> Tuple[str, datetime]:
+    """Returns (jwt_string, expires_at).
+
+    `ttl_minutes` overrides the configured TTL — the OIDC SSO flow
+    issues 8-hour cookie sessions (`OIDC_SESSION_MAX_HOURS`) instead of
+    the short Bearer-token TTL used by the password + refresh flow.
+    """
     _check_secret()
     now = datetime.now(UTC)
-    exp = now + timedelta(minutes=settings.ADMIN_ACCESS_TOKEN_TTL_MINUTES)
+    exp = now + timedelta(minutes=ttl_minutes or settings.ADMIN_ACCESS_TOKEN_TTL_MINUTES)
     payload = {
         "sub": str(user_id),
         "role": role,

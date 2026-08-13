@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Optional
 from uuid import UUID
 
-from fastapi import Depends, Header, HTTPException, Path, status
+from fastapi import Cookie, Depends, Header, HTTPException, Path, status
 from sqlmodel import Session
 
 from app.models.user import User
@@ -34,16 +34,29 @@ def get_db():
 
 def require_admin_token(
     authorization: Optional[str] = Header(default=None),
+    baley_admin_session: Optional[str] = Cookie(default=None),
     session: Session = Depends(get_db),
 ) -> AdminPrincipal:
-    """Validate Authorization: Bearer <admin_access>. Returns the user."""
-    if not authorization or not authorization.lower().startswith("bearer "):
+    """Validate the admin JWT from EITHER source:
+
+    - `Authorization: Bearer <token>` — password/refresh flow (panel's
+      localStorage tokens, scripts, curl).
+    - `baley_admin_session` HttpOnly cookie — OIDC SSO flow. The cookie
+      carries the same JWT shape, so validation below is identical.
+
+    Bearer wins when both are present (explicit beats ambient).
+    """
+    token: Optional[str] = None
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+    elif baley_admin_session:
+        token = baley_admin_session.strip()
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="missing Bearer token",
+            detail="missing Bearer token or session cookie",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    token = authorization.split(" ", 1)[1].strip()
     try:
         payload = core.decode_access_token(token)
     except core.AdminTokenError as exc:

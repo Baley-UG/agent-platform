@@ -138,6 +138,12 @@ app.add_middleware(CORSMiddleware, **_cors_kwargs)
 # Include API router
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
+# OIDC SSO callback — root-level, outside /api/v1, because Authentik's
+# registered redirect URI is `<APP_URL>/auth/callback`.
+from app.api.v1.admin_oidc import oidc_callback  # noqa: E402
+
+app.get("/auth/callback", include_in_schema=False)(oidc_callback)
+
 # Federate OpenAPI from downstream services so /docs on port 8000 shows
 # the proxied `/instagram-scraper/...` and `/cp/...` endpoints with their
 # real schemas (not just a generic catch-all proxy stub).
