@@ -4,7 +4,23 @@ This module sets up and configures Prometheus metrics for monitoring the applica
 """
 
 from prometheus_client import Counter, Histogram, Gauge
+from starlette.requests import Request
 from starlette_prometheus import metrics, PrometheusMiddleware
+
+
+class SafePrometheusMiddleware(PrometheusMiddleware):
+    """starlette_prometheus assumes every matched route has a `.path`;
+    FastAPI's lazy router entries (`_IncludedRouter`) don't, which 500s
+    every included route. Fall back to the raw URL path for those."""
+
+    def get_path_template(self, request: Request):
+        from starlette.routing import Match
+
+        for route in request.app.routes:
+            match, _ = route.matches(request.scope)
+            if match == Match.FULL:
+                return getattr(route, "path", request.url.path), True
+        return request.url.path, False
 
 # Request metrics
 http_requests_total = Counter("http_requests_total", "Total number of HTTP requests", ["method", "endpoint", "status"])
@@ -43,7 +59,7 @@ def setup_metrics(app):
         app: FastAPI application instance
     """
     # Add Prometheus middleware
-    app.add_middleware(PrometheusMiddleware)
+    app.add_middleware(SafePrometheusMiddleware)
 
     # Add metrics endpoint
     app.add_route("/metrics", metrics)

@@ -163,6 +163,17 @@ class Settings:
         self.JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
         self.JWT_ACCESS_TOKEN_EXPIRE_DAYS = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_DAYS", "30"))
 
+        # Admin panel auth (backend-api.md § 2: access 1h, refresh 7d)
+        self.ADMIN_ACCESS_TOKEN_TTL_MINUTES = int(os.getenv("ADMIN_ACCESS_TOKEN_TTL_MINUTES", "60"))
+        self.ADMIN_REFRESH_TOKEN_TTL_DAYS = int(os.getenv("ADMIN_REFRESH_TOKEN_TTL_DAYS", "7"))
+        self.ADMIN_UI_URL = os.getenv("ADMIN_UI_URL", "http://localhost:3000")
+
+        # Baley SSO (Authentik OIDC); SSO endpoints stay disabled when unset
+        self.OIDC_ISSUER = os.getenv("OIDC_ISSUER", "")
+        self.OIDC_CLIENT_ID = os.getenv("OIDC_CLIENT_ID", "")
+        self.OIDC_CLIENT_SECRET = os.getenv("OIDC_CLIENT_SECRET", "")
+        self.OIDC_REDIRECT_URI = os.getenv("OIDC_REDIRECT_URI", "")
+
         # Logging Configuration
         self.LOG_DIR = Path(os.getenv("LOG_DIR", "logs"))
         self.LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")

@@ -1,0 +1,11 @@
+# Dev sunucusu port düzeni:
+# - Host 8000 myaichat-dev API'de, bu yüzden app 127.0.0.1:8010'a alındı
+#   (nginx: api.agent-platform.internal.baley.eu -> 8010).
+# - db yalnızca compose ağı içinden kullanılıyor; host'a port açılmıyor.
+# - prometheus/grafana/cadvisor bu sunucuda başlatılmıyor (up'a dahil edilmez).
+services:
+  app:
+    ports: !override
+      - "127.0.0.1:8010:8000"
+  db:
+    ports: !override []

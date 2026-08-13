@@ -114,6 +114,27 @@ class DatabaseService:
             user = session.exec(statement).first()
             return user
 
+    async def update_user_password(self, user_id: int, hashed_password: str) -> Optional[User]:
+        """Update a user's password hash.
+
+        Args:
+            user_id: The ID of the user to update
+            hashed_password: The new bcrypt-hashed password
+
+        Returns:
+            Optional[User]: The updated user, or None if not found
+        """
+        with Session(self.engine) as session:
+            user = session.get(User, user_id)
+            if user is None:
+                return None
+            user.hashed_password = hashed_password
+            session.add(user)
+            session.commit()
+            session.refresh(user)
+            logger.info("user_password_updated", user_id=user_id)
+            return user
+
     async def delete_user_by_email(self, email: str) -> bool:
         """Delete a user by email.
 
