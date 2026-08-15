@@ -112,8 +112,14 @@ def ensure_bucket() -> None:
 
 
 def project_prefix(project_id: uuid.UUID | str) -> str:
-    """Return the canonical key prefix for a project's assets."""
-    return f"projects/{project_id}/"
+    """Return the canonical key prefix for a project's assets.
+
+    `S3_ROOT_PREFIX` lets several services share one bucket by keeping
+    each one under its own top-level folder (e.g. `agent_platform/`).
+    Unset — the default — keeps the historical `projects/<id>/` layout.
+    """
+    root = (getattr(settings, "S3_ROOT_PREFIX", "") or "").strip("/")
+    return f"{root}/projects/{project_id}/" if root else f"projects/{project_id}/"
 
 
 def make_key(project_id: uuid.UUID | str, kind: str, filename: str) -> str:

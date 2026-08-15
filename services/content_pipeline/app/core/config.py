@@ -117,6 +117,9 @@ class Settings(BaseSettings):
     # leave unset — `S3_ENDPOINT` is already public.
     S3_PUBLIC_ENDPOINT: Optional[str] = Field(default="http://localhost:9000")
     S3_BUCKET: str = Field(default="content-pipeline-dev")
+    # Top-level folder inside the bucket, so this service can share a
+    # bucket with others (e.g. "agent_platform"). Empty = bucket root.
+    S3_ROOT_PREFIX: str = Field(default="")
     S3_ACCESS_KEY: str = Field(default="minioadmin")
     S3_SECRET_KEY: str = Field(default="minioadmin")
     S3_REGION: str = Field(default="us-east-1")
