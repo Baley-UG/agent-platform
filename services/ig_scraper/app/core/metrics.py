@@ -8,7 +8,30 @@ re-defining them.
 
 from fastapi import FastAPI
 from prometheus_client import Counter, Histogram
+from starlette.requests import Request
+from starlette.routing import Match
 from starlette_prometheus import PrometheusMiddleware, metrics
+
+
+class SafePrometheusMiddleware(PrometheusMiddleware):
+    """Same guard as the main app's `app/core/metrics.py`.
+
+    starlette_prometheus 0.9's `get_path_template` calls `route.path` on
+    every entry of `app.routes`; FastAPI >=0.141 wraps included routers in
+    a lazy `_IncludedRouter` that matches requests but has no `.path`,
+    which 500s EVERY request through the middleware.
+    """
+
+    def get_path_template(self, request: Request):
+        for route in request.app.routes:
+            try:
+                match, _child = route.matches(request.scope)
+            except Exception:  # noqa: BLE001 — defensive: any exotic route type
+                continue
+            if match == Match.FULL:
+                path = getattr(route, "path", None)
+                return (path or request.url.path), path is not None
+        return request.url.path, False
 
 
 # ---------- Job metrics ----------
@@ -54,5 +77,5 @@ ig_proxy_failures_total = Counter(
 
 def setup_metrics(app: FastAPI) -> None:
     """Mount Prometheus middleware and the /metrics endpoint."""
-    app.add_middleware(PrometheusMiddleware)
+    app.add_middleware(SafePrometheusMiddleware)
     app.add_route("/metrics", metrics)
