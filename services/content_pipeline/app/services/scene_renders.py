@@ -202,6 +202,15 @@ def mark_video_ready(session: Session, render: SceneRender, asset: MediaAsset) -
     return render
 
 
+def mark_cutting_segment(session: Session, render: SceneRender) -> SceneRender:
+    """repurpose mode — this cell's source window is being cut."""
+    render.status = "cutting_segment"
+    render.error = None
+    session.add(render)
+    session.flush()
+    return render
+
+
 def mark_failed(session: Session, render: SceneRender, error: str) -> SceneRender:
     render.status = "failed"
     render.error = error[:2000]
@@ -217,9 +226,16 @@ def recompute_scenario_status_from_renders(session: Session, scenario: Scenario)
     """Walk scene_renders for this scenario and bump scenario.status accordingly.
 
     Rules:
-    - Any render `failed` AND scenario currently in a generating_* state → scenario `failed`.
+    - Any render `failed` AND scenario currently in a generating_* /
+      cutting_segments state → scenario `failed`.
     - All renders `image_ready` AND scenario `generating_images` → `images_ready`.
     - All renders `video_ready` AND scenario `generating_videos` → `videos_ready`.
+    - All renders `video_ready` AND scenario `cutting_segments` →
+      `segments_ready`. In repurpose mode `cutting_segments` covers BOTH
+      the ffmpeg cuts (action=keep) and any AI-synthesized replacements
+      (action=replace), which is why the terminal per-render status is
+      `video_ready` for both paths — a replaced segment finishes through
+      image_gen → video_gen exactly as it does in recreate mode.
     """
     rows = list_for_scenario(session, scenario.id)
     if not rows:
@@ -227,7 +243,11 @@ def recompute_scenario_status_from_renders(session: Session, scenario: Scenario)
 
     statuses = {r.status for r in rows}
 
-    if "failed" in statuses and scenario.status in ("generating_images", "generating_videos"):
+    if "failed" in statuses and scenario.status in (
+        "generating_images",
+        "generating_videos",
+        "cutting_segments",
+    ):
         scenarios_svc.mark_failed(
             session, scenario, "one or more scene_renders failed (see scene_renders.error)"
         )
@@ -239,6 +259,10 @@ def recompute_scenario_status_from_renders(session: Session, scenario: Scenario)
         session.flush()
     elif scenario.status == "generating_videos" and statuses == {"video_ready"}:
         scenarios_svc.transition(scenario, "videos_ready")
+        session.add(scenario)
+        session.flush()
+    elif scenario.status == "cutting_segments" and statuses == {"video_ready"}:
+        scenarios_svc.transition(scenario, "segments_ready")
         session.add(scenario)
         session.flush()
 

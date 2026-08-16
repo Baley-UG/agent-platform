@@ -22,3 +22,9 @@ wheels/
 # Reports
 evals/reports/
 .env.bak
+
+# macOS
+.DS_Store
+
+# Claude Code local session state
+.claude/

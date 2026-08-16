@@ -111,6 +111,46 @@ def upgrade() -> None:
         schema=SCHEMA,
     )
 
+    # Repurpose mode — the cut list derived from the source reel's scene
+    # boundaries, and the brand kit pinned for the branding pass. The
+    # plan is admin-editable before the cut runs; its shape lives in
+    # `app/services/segments.py`. `brand_kit_id` NULL → the project's
+    # `is_default` kit.
+    op.add_column(
+        "scenarios",
+        sa.Column("segment_plan", postgresql.JSONB, nullable=True),
+        schema=SCHEMA,
+    )
+    op.add_column(
+        "scenarios",
+        sa.Column(
+            "brand_kit_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey(f"{SCHEMA}.brand_kits.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+        schema=SCHEMA,
+    )
+
+    # Repurpose mode — the source-video window each render cell was cut
+    # from. `segment_action` ∈ {keep, replace, drop}; `keep` cuts real
+    # footage, `replace` falls through to the image_gen/video_gen path.
+    op.add_column(
+        "scene_renders",
+        sa.Column("source_start_sec", sa.Numeric(8, 3), nullable=True),
+        schema=SCHEMA,
+    )
+    op.add_column(
+        "scene_renders",
+        sa.Column("source_end_sec", sa.Numeric(8, 3), nullable=True),
+        schema=SCHEMA,
+    )
+    op.add_column(
+        "scene_renders",
+        sa.Column("segment_action", sa.String(16), nullable=True),
+        schema=SCHEMA,
+    )
+
     # Reference dedup (CP-M8). Stored as bytea to avoid hard pgvector dep;
     # the perceptual hash compare is byte-distance so this is sufficient.
     # Embedding is reserved for future cosine similarity (admin opts in to
@@ -149,5 +189,7 @@ def downgrade() -> None:
         op.drop_column("content_references", col, schema=SCHEMA)
     for col in ("hashtags_override", "caption_override"):
         op.drop_column("plan_slots", col, schema=SCHEMA)
-    for col in ("default_hashtags", "default_caption"):
+    for col in ("segment_action", "source_end_sec", "source_start_sec"):
+        op.drop_column("scene_renders", col, schema=SCHEMA)
+    for col in ("brand_kit_id", "segment_plan", "default_hashtags", "default_caption"):
         op.drop_column("scenarios", col, schema=SCHEMA)

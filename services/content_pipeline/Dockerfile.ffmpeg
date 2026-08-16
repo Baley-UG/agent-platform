@@ -42,6 +42,7 @@ USER appuser
 # Render container consumes ffmpeg-bound queues:
 #   - media_render   → compose pipeline (Phase 1)
 #   - frame_extract  → brand-video keyframe pass (Phase 3)
-# Both need the ffmpeg binary baked into this image. Other queues
+#   - segment_cut    → repurpose source-segment cutting
+# All need the ffmpeg binary baked into this image. Other queues
 # (analyzer, image_gen, etc.) stay on the generic worker.
-CMD ["python", "-m", "app.worker", "--queues", "media_render", "frame_extract"]
+CMD ["python", "-m", "app.worker", "--queues", "media_render", "frame_extract", "segment_cut"]

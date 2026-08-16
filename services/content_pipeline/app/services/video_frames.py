@@ -310,6 +310,77 @@ def extract_keyframes(
         return out
 
 
+DEFAULT_BOUNDARY_THRESHOLD = 0.22
+
+
+def detect_scene_boundaries(
+    video_path: str, *, threshold: float = DEFAULT_BOUNDARY_THRESHOLD
+) -> List[float]:
+    """Return the source video's shot-boundary timestamps, sorted.
+
+    `extract_keyframes` mixes true scene-detect hits with even-interval
+    filler and caps the count, so its timestamps are a thumbnail set,
+    not a cut list. Repurpose mode needs the real boundaries: same
+    `select='gt(scene,T)'` + `showinfo` parse as `_scene_detect_frames`,
+    but written to the null muxer (no jpegs) with no count cap and a
+    lower threshold, so softer cuts survive.
+
+    0.0 and EOF are excluded — `segments.plan_segments` supplies those.
+    Returns [] when ffmpeg is missing or the probe fails; callers fall
+    back to even intervals.
+    """
+    if not shutil.which("ffmpeg"):
+        return []
+    if not os.path.exists(video_path):
+        return []
+
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-i",
+        video_path,
+        "-vf",
+        f"select='gt(scene,{threshold})',showinfo",
+        "-an",
+        "-f",
+        "null",
+        "-",
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            check=False,
+            timeout=600,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        logger.warning("scene_boundary_detect_failed", error=str(exc), path=video_path)
+        return []
+    if proc.returncode != 0:
+        tail = (proc.stderr or "").splitlines()[-6:]
+        logger.warning(
+            "scene_boundary_detect_nonzero",
+            code=proc.returncode,
+            stderr=" | ".join(tail),
+        )
+        return []
+
+    out: list[float] = []
+    for line in (proc.stderr or "").splitlines():
+        if "pts_time:" not in line:
+            continue
+        try:
+            tok = line.split("pts_time:", 1)[1].strip().split()[0]
+            ts = float(tok)
+        except (ValueError, IndexError):
+            continue
+        if ts > 0.0:
+            out.append(ts)
+    return sorted(set(out))
+
+
 def s3_key_for_frame(
     project_id: uuid.UUID, parent_asset_id: uuid.UUID, idx: int
 ) -> str:

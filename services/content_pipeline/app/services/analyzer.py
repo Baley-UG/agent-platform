@@ -207,6 +207,92 @@ When the genre is text-on-screen (educational lists, swipe carousels), voiceover
 """
 
 
+REPURPOSE_SYSTEM_PROMPT = """You are a short-form video editor working in REPURPOSE mode.
+
+The source video has ALREADY been cut into numbered segments at its real shot
+boundaries. You are NOT writing image or motion prompts — no frames are being
+synthesized. Your job is to decide, per segment, whether the real footage ships
+as-is, and to write the new on-screen text that rebrands it.
+
+## 0. WHAT YOU CONTROL
+- `action` per segment: keep | replace | drop
+- `on_screen_text` + `text_style` per segment (this is the main rebranding lever)
+- `hook`, `cta`, `duration_sec`, `music`, and the caption/hashtag guidance
+
+## 1. ACTION RULES
+- Default is `keep`. The whole point of this mode is shipping the real footage.
+- `replace` ONLY when the segment would be unusable as-is: a competitor logo,
+  watermark, or readable brand name fills the frame; or the segment shows a
+  price/claim that is false for us. When you mark `replace`, you MUST supply
+  `replace_reason` and a `replace_prompt` (a normal image-generation prompt
+  describing a substitute shot that matches the segment's framing and energy).
+- `drop` ONLY for dead air — a black frame, an accidental cut, a trailing
+  end-card. Dropping shortens the output, so use it sparingly.
+
+## 2. DURATIONS ARE FIXED
+Each segment's duration is given to you. Echo it EXACTLY in `duration`. Do not
+round, do not invent, do not "improve the pacing" by changing numbers — the
+video is already cut. Changing a duration desyncs every text overlay.
+
+## 3. ON-SCREEN TEXT
+- This is where our brand voice lives. Write text that reads as OURS, not a
+  transcription of the source's captions.
+- One short line per segment. It must be readable in the segment's duration:
+  roughly 3 words per second of segment, max ~8 words.
+- Not every segment needs text. Leave `on_screen_text` empty for segments that
+  carry themselves. Wall-to-wall text reads as spam.
+- `text_style` ∈ {bold_center, subtitle_bottom, title_top, kinetic_typography}.
+  Use `kinetic_typography` for the hook segment at most; it is expensive to read.
+
+## 4. AUDIO
+The source audio is KEPT by default — trending audio is a large part of why the
+source performed, and stripping it costs reach. So:
+- Set `voiceover_enabled` to false and leave every `voiceover` empty UNLESS the
+  brief explicitly asks for narration.
+- Set `source_audio_mode` to "keep". Use "duck" only when you also wrote
+  voiceover lines; "drop" only when the brief demands our own audio.
+
+## 5. HOOK AND CTA
+`hook` is the line that goes on the FIRST segment. `cta` goes on the last one.
+Both are script lines the viewer reads — not descriptions of what happens.
+
+## 6. OUTPUT SCHEMA (strict JSON, no prose, no fences)
+{
+  "duration_sec": <sum of kept segment durations>,
+  "hook": "<first-segment line>",
+  "cta": "<last-segment line>",
+  "voiceover_enabled": false,
+  "source_audio_mode": "keep",
+  "music": {"mood": "<mood>", "bpm_range": "<lo-hi>"},
+  "outro_template_id": null,
+  "scenes": [
+    {
+      "idx": 1,
+      "segment_idx": 1,
+      "action": "keep",
+      "replace_reason": null,
+      "replace_prompt": null,
+      "duration": 2.4,
+      "shot_type": "<what the real footage shows>",
+      "on_screen_text": "<our line, or empty>",
+      "text_style": "bold_center",
+      "transition_out": "cut",
+      "voiceover": "",
+      "audio_mood": "<mood>"
+    }
+  ]
+}
+
+## 7. HARD RULES
+- One scene per segment. Every segment index in the SEGMENT MAP must appear
+  exactly once, including ones you mark `drop`.
+- `idx` and `segment_idx` are the same number for every scene.
+- `duration` must equal the segment's stated duration.
+- `transition_out` is "cut" unless the source itself dissolves there.
+- Output strictly valid JSON. No trailing commas. No comments. No backticks.
+"""
+
+
 # Instagram's media_type → human-readable kind. The analyzer uses this to
 # decide whether to produce a still / slideshow / reel scenario.
 _MEDIA_TYPE_LABELS = {
@@ -335,6 +421,47 @@ def build_user_prompt(reference: ContentReference, brand_style_suffix: Optional[
     return "\n".join(parts)
 
 
+def build_repurpose_user_prompt(
+    reference: ContentReference,
+    segments: list,
+    brand_style_suffix: Optional[str] = None,
+) -> str:
+    """User message for repurpose mode.
+
+    Reuses the reference brief from `build_user_prompt` (caption,
+    metrics, engagement signal, hashtags, brand voice) and replaces the
+    trailing source-kind directive with the SEGMENT MAP — the numbered
+    cut list the model must answer one-for-one.
+
+    The vision images attached alongside are index-aligned with the map:
+    image N is segment N's representative frame.
+    """
+    base = build_user_prompt(reference, brand_style_suffix=brand_style_suffix)
+    # Drop the recreate-mode closing directive (always the last block).
+    head = base.rsplit("\nProduce a scenario JSON", 1)[0]
+
+    lines = [
+        head,
+        "\n# SEGMENT MAP (image N attached below = segment N)",
+    ]
+    for seg in segments:
+        lines.append(
+            f"SEGMENT {seg.idx}  {seg.start_sec:.2f}–{seg.end_sec:.2f}s  "
+            f"({seg.duration_sec:.2f}s)"
+        )
+    total = sum(s.duration_sec for s in segments)
+    lines.append(
+        f"\nTotal source runtime: {total:.2f}s across {len(segments)} segments."
+    )
+    lines.append(
+        "\nProduce the repurpose scenario JSON. One scene per segment above, in "
+        "order, with `duration` echoed exactly. Default every action to `keep`; "
+        "mark `replace` only for the specific reasons in § 1. Keep the source "
+        "audio — write on-screen text, not narration."
+    )
+    return "\n".join(lines)
+
+
 _JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
@@ -356,17 +483,63 @@ def parse_scenario_json(text: str) -> dict:
     return json.loads(cleaned)
 
 
-def validate_scenario(payload: dict) -> dict:
+_REPURPOSE_ACTIONS = ("keep", "replace", "drop")
+
+
+def _validate_repurpose(payload: dict, expected_indices: Optional[set] = None) -> dict:
+    """Repurpose scenes describe edit decisions, not synthesis prompts."""
+    scenes = payload["scenes"]
+    seen: set[int] = set()
+    for i, scene in enumerate(scenes):
+        if not isinstance(scene, dict):
+            raise ValueError(f"scenes[{i}] is not an object")
+        for field in ("idx", "segment_idx", "action", "duration"):
+            if field not in scene:
+                raise ValueError(f"scenes[{i}] missing required field: {field}")
+        action = scene.get("action")
+        if action not in _REPURPOSE_ACTIONS:
+            raise ValueError(
+                f"scenes[{i}].action must be one of {_REPURPOSE_ACTIONS}, got {action!r}"
+            )
+        if action == "replace" and not (scene.get("replace_prompt") or "").strip():
+            raise ValueError(f"scenes[{i}].action='replace' requires replace_prompt")
+        try:
+            seen.add(int(scene["segment_idx"]))
+        except (TypeError, ValueError):
+            raise ValueError(f"scenes[{i}].segment_idx is not an integer") from None
+
+    if expected_indices is not None and seen != expected_indices:
+        missing = sorted(expected_indices - seen)
+        extra = sorted(seen - expected_indices)
+        raise ValueError(
+            "scenes must cover every planned segment exactly once "
+            f"(missing={missing}, unexpected={extra})"
+        )
+    return payload
+
+
+def validate_scenario(
+    payload: dict,
+    *,
+    mode: str = "recreate",
+    expected_segment_indices: Optional[set] = None,
+) -> dict:
     """Lightweight shape validation. Returns the (possibly normalized) payload.
 
     Strict pydantic validation lives on the Scenario edit endpoint; here we
-    just guarantee the analyzer didn't return garbage.
+    just guarantee the analyzer didn't return garbage. `mode` picks the
+    per-scene field set: recreate/brand_build scenes carry synthesis
+    prompts, repurpose scenes carry edit decisions.
     """
     if not isinstance(payload, dict):
         raise ValueError("scenario JSON is not an object")
     scenes = payload.get("scenes")
     if not isinstance(scenes, list) or not scenes:
         raise ValueError("scenario.scenes must be a non-empty array")
+
+    if mode == "repurpose":
+        return _validate_repurpose(payload, expected_segment_indices)
+
     for i, scene in enumerate(scenes):
         if not isinstance(scene, dict):
             raise ValueError(f"scenes[{i}] is not an object")
@@ -383,22 +556,42 @@ async def analyze_reference(
     provider: LLMProvider,
     brand_style_suffix: Optional[str] = None,
     vision_inputs: Optional[list[VisionInput]] = None,
+    production_mode: str = "recreate",
+    segments: Optional[list] = None,
 ) -> tuple[dict, LLMResponse]:
     """Run the analyzer end-to-end. Returns (scenario_json, llm_response).
 
     Caller is responsible for writing the `generation_calls` row and updating
     the scenario row — keeps this function easy to unit test with fakes.
+
+    In `repurpose` mode the caller must pass the planned `segments`; the
+    prompt and the validation both key off that cut list.
     """
-    user_prompt = build_user_prompt(reference, brand_style_suffix=brand_style_suffix)
+    is_repurpose = production_mode == "repurpose" and segments
+    if is_repurpose:
+        user_prompt = build_repurpose_user_prompt(
+            reference, segments, brand_style_suffix=brand_style_suffix
+        )
+        system_prompt = REPURPOSE_SYSTEM_PROMPT
+        expected = {s.idx for s in segments}
+    else:
+        user_prompt = build_user_prompt(reference, brand_style_suffix=brand_style_suffix)
+        system_prompt = SYSTEM_PROMPT
+        expected = None
+
     response = await provider.complete(
         prompt=user_prompt,
         route=route,
         vision_inputs=vision_inputs,
-        system=SYSTEM_PROMPT,
+        system=system_prompt,
     )
     try:
         scenario = parse_scenario_json(response.text)
-        scenario = validate_scenario(scenario)
+        scenario = validate_scenario(
+            scenario,
+            mode="repurpose" if is_repurpose else production_mode,
+            expected_segment_indices=expected,
+        )
     except (ValueError, json.JSONDecodeError) as exc:
         logger.warning("analyzer_parse_failed", error=str(exc), preview=response.text[:300])
         raise

@@ -38,7 +38,7 @@ DEFAULT_QUEUES = [
     "publish",
     "planner",
 ]
-ALL_QUEUES = DEFAULT_QUEUES + ["media_render", "frame_extract"]
+ALL_QUEUES = DEFAULT_QUEUES + ["media_render", "frame_extract", "segment_cut"]
 
 
 def _parse_args(argv: List[str]) -> argparse.Namespace:

@@ -38,6 +38,10 @@ _QUEUE_TIMEOUTS = {
     # (5-30s typical, completes in 5-15s) but scene-detect on a long
     # video can chew minutes. 20min cap.
     "frame_extract": 1200,
+    # Repurpose — one ffmpeg process cuts every keep segment for an
+    # aspect group in a single decode pass. Same order of magnitude as
+    # compose, so it gets the same cap.
+    "segment_cut": 1800,
     "publish": 900,         # IG/TT container polling
     "planner": 300,
 }

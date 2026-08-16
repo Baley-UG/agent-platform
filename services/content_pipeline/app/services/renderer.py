@@ -112,6 +112,18 @@ class ComposeInputs:
     # Appended after the main compose via a second normalization pass
     # (`append_outro`). Any codec/dims — the pass re-encodes.
     outro_video_key: Optional[str] = None
+    # What to do with the audio the scene videos carry.
+    #   "drop" — discard it (the CP-M5 behaviour, and still the default
+    #            so recreate/brand_build argv is unchanged).
+    #   "keep" — ship it as the output's audio. Repurpose uses this:
+    #            the source's trending audio is a large part of why it
+    #            performed, and re-voicing it costs reach.
+    #   "duck" — mix it under our voiceover via the existing
+    #            sidechaincompress bus.
+    # Only meaningful on the concat (scene_video_keys) path; the
+    # slideshow path has no source audio to begin with.
+    source_audio_mode: str = "drop"
+    source_audio_volume: float = 0.30
 
 
 @dataclass
@@ -371,26 +383,62 @@ def _scene_voice_bus(
 
 
 def _ducked_audio_filters(
-    recipe: "ComposeRecipe", vo_src: str, mu_src: str
+    recipe: "ComposeRecipe", vo_src: str, mu_src: str, mu_volume: Optional[float] = None
 ) -> List[str]:
-    """Voiceover + music mix with sidechain ducking.
+    """Voiceover + background mix with sidechain ducking.
 
     `vo_src` / `mu_src` are filter labels (`[1:a]` for a raw input,
-    `[vobus]` for the per-scene voice bus). The music is compressed
-    WHENEVER the voice carries signal — drops ~12dB under speech,
-    recovers in ~400ms of silence. This is the standard "podcast bed"
-    treatment; fixed-volume `amix` made the music fight the voice.
+    `[vobus]` for the per-scene voice bus, `[bedbus]` for a pre-mixed
+    source-audio + music bed). The bed is compressed WHENEVER the voice
+    carries signal — drops ~12dB under speech, recovers in ~400ms of
+    silence. This is the standard "podcast bed" treatment; fixed-volume
+    `amix` made the music fight the voice.
+
+    `mu_volume` overrides the bed gain; pass 1.0 when the caller already
+    applied per-source volumes while pre-mixing.
     """
+    bed_volume = recipe.music_volume if mu_volume is None else mu_volume
     return [
         # Split the voice: one branch to the mix, one as the sidechain
         # detector.
         f"{vo_src}volume={recipe.voiceover_volume},asplit=2[vo][sc]",
-        f"{mu_src}volume={recipe.music_volume}[bgpre]",
+        f"{mu_src}volume={bed_volume}[bgpre]",
         "[bgpre][sc]sidechaincompress="
         "threshold=0.02:ratio=12:attack=15:release=400:makeup=1[bg]",
         "[vo][bg]amix=inputs=2:duration=longest:dropout_transition=2[mix]",
         f"[mix]loudnorm=I={recipe.audio_lufs}:TP=-1.5:LRA=11[aout]",
     ]
+
+
+def _mix_beds(entries: List[tuple[str, float]]) -> tuple[List[str], str]:
+    """Fold N background sources (source audio, music) into one label.
+
+    `entries` is `[(filter_label, volume)]`. `normalize=0` keeps amix
+    from halving every input's level when a second bed joins.
+    """
+    if len(entries) == 1:
+        label, volume = entries[0]
+        return [f"{label}volume={volume}[bedbus]"], "[bedbus]"
+    parts: List[str] = []
+    ins: List[str] = []
+    for i, (label, volume) in enumerate(entries):
+        parts.append(f"{label}volume={volume}[bed{i}]")
+        ins.append(f"[bed{i}]")
+    parts.append(
+        "".join(ins)
+        + f"amix=inputs={len(entries)}:duration=longest:dropout_transition=2:normalize=0[bedbus]"
+    )
+    return parts, "[bedbus]"
+
+
+def _source_audio_participates(inputs: "ComposeInputs") -> bool:
+    """True when the scene videos' own audio should reach the output.
+
+    Only the concat path has source audio; the slideshow path builds
+    video from stills. `drop` (the default) keeps every pre-existing
+    recipe's argv byte-identical.
+    """
+    return bool(inputs.scene_video_keys) and inputs.source_audio_mode in ("keep", "duck")
 
 
 def build_compose_command(
@@ -467,8 +515,10 @@ def build_compose_command(
     # positional — declaring `-f lavfi -i anullsrc=…` after a `-map`
     # makes the parser treat it as an output spec (raises "Option map
     # cannot be applied to input url anullsrc=…").
+    keeps_source_audio = _source_audio_participates(inputs)
+
     silent_audio_index: Optional[int] = None
-    if not recipe.has_voiceover and not recipe.has_music:
+    if not recipe.has_voiceover and not recipe.has_music and not keeps_source_audio:
         cmd += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
         silent_audio_index = next_index
         next_index += 1
@@ -505,7 +555,28 @@ def build_compose_command(
         vo_src = f"[{vo_input_index}:a]"
 
     audio_label = None
-    if vo_src is not None and mu_input_index is not None:
+    if keeps_source_audio:
+        # Repurpose path — the cut segments carry the source's own
+        # (usually trending) audio. `[0:a]` is the concat demuxer's
+        # audio stream. Beds are pre-mixed into one label so the
+        # ducking filter below stays a two-input graph.
+        beds: List[tuple[str, float]] = [("[0:a]", inputs.source_audio_volume if vo_src else 1.0)]
+        if mu_input_index is not None:
+            beds.append((f"[{mu_input_index}:a]", recipe.music_volume))
+        bed_parts, bed_label = _mix_beds(beds)
+        filter_parts.extend(bed_parts)
+        if vo_src is not None:
+            # Voiceover on top: the whole bed (source + music) ducks
+            # under speech, same sidechain graph as music-only does.
+            filter_parts.extend(
+                _ducked_audio_filters(recipe, vo_src=vo_src, mu_src=bed_label, mu_volume=1.0)
+            )
+        else:
+            filter_parts.append(
+                f"{bed_label}loudnorm=I={recipe.audio_lufs}:TP=-1.5:LRA=11[aout]"
+            )
+        audio_label = "[aout]"
+    elif vo_src is not None and mu_input_index is not None:
         # Sidechain ducking — music dips ~12dB under speech instead of
         # the old fixed-volume amix fight.
         filter_parts.extend(
@@ -522,9 +593,9 @@ def build_compose_command(
             f"[{mu_input_index}:a]volume={recipe.music_volume},loudnorm=I={recipe.audio_lufs}:TP=-1.5:LRA=11[aout]"
         )
         audio_label = "[aout]"
-    # else: no audio inputs; the concat scene videos may carry their own audio
-    # which we silently drop in CP-M5 (an admin who wanted the original audio
-    # would set music_volume=0 and skip TTS — a corner case for CP-M5.5).
+    # else: `source_audio_mode='drop'` and no voiceover/music — the scene
+    # videos' own audio is discarded and the silent input declared above
+    # is mapped instead.
 
     if filter_parts:
         cmd += ["-filter_complex", ";".join(filter_parts)]
