@@ -24,6 +24,10 @@ class SceneRenderRead(BaseModel):
     # Phase 4 — reference frame seeded onto this cell at materialize
     # time. NULL means image_gen will fall through to pure t2i.
     init_image_s3_key: Optional[str] = None
+    # Repurpose — the source-video window this cell was cut from.
+    source_start_sec: Optional[float] = None
+    source_end_sec: Optional[float] = None
+    segment_action: Optional[str] = None
     status: str
     error: Optional[str]
     created_at: datetime

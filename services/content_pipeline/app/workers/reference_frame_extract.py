@@ -63,11 +63,7 @@ def run(reference_id: str) -> dict:
 
         meta = dict(ref.metadata_json or {})
         existing = meta.get("frame_s3_keys") or []
-        if isinstance(existing, list) and existing:
-            # Already extracted — admins can force a re-run by editing
-            # the reference and clearing `frame_s3_keys` (or via a
-            # future panel button).
-            return {"ok": True, "skipped": "already extracted", "frames": len(existing)}
+        already_extracted = isinstance(existing, list) and bool(existing)
 
         try:
             local_path = _download_video(ref)
@@ -78,6 +74,27 @@ def run(reference_id: str) -> dict:
                 error=str(exc),
             )
             return {"ok": False, "error": f"download failed: {exc}"}
+
+        # Cut points + duration are stamped on EVERY run, including
+        # re-runs that skip frame extraction — that backfills references
+        # imported before repurpose mode existed.
+        boundaries = vf.detect_scene_boundaries(local_path)
+        meta["scene_boundaries_sec"] = boundaries
+        meta["duration_sec_probed"] = vf._probe_duration(local_path)
+
+        if already_extracted:
+            # Frames are already in S3 — admins force a full re-run by
+            # clearing `frame_s3_keys` on the reference.
+            ref.metadata_json = meta
+            session.add(ref)
+            session.flush()
+            _safe_unlink(local_path)
+            return {
+                "ok": True,
+                "skipped": "already extracted",
+                "frames": len(existing),
+                "boundaries": len(boundaries),
+            }
 
         try:
             frames = vf.extract_keyframes(local_path)
@@ -91,8 +108,11 @@ def run(reference_id: str) -> dict:
             return {"ok": False, "error": str(exc)}
 
         if not frames:
+            ref.metadata_json = meta
+            session.add(ref)
+            session.flush()
             _safe_unlink(local_path)
-            return {"ok": True, "frames": 0}
+            return {"ok": True, "frames": 0, "boundaries": len(boundaries)}
 
         # Upload + collect keys. We store flat keys + timestamps so
         # `compute_init_keys` can pick frames by scene index.
@@ -128,6 +148,7 @@ def run(reference_id: str) -> dict:
             "ok": True,
             "reference_id": reference_id,
             "frames": len(frame_records),
+            "boundaries": len(boundaries),
         }
 
 

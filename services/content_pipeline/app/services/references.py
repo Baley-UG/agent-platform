@@ -296,22 +296,89 @@ def import_from_scraper(
     # sources already have a per-slide init image via
     # `metadata.slide_s3_keys`; only video sources need ffmpeg.
     if (media_type == 2 or (raw.get("product_type") or "").lower() in ("clips", "reels")) and media_s3_key:
-        try:
-            from app.services import queue as queue_svc
-
-            queue_svc.enqueue(
-                "frame_extract",
-                "app.workers.reference_frame_extract.run",
-                str(committed.id),
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "ref_frame_extract_enqueue_failed",
-                reference_id=str(committed.id),
-                error=str(exc),
-            )
+        enqueue_frame_extract(committed)
 
     return committed
+
+
+def enqueue_frame_extract(reference: ContentReference) -> Optional[str]:
+    """Queue the ffmpeg keyframe + scene-boundary pass for a reel.
+
+    Soft-fails when Redis is down — the reference is still usable, the
+    admin just re-triggers from the panel.
+    """
+    try:
+        from app.services import queue as queue_svc
+
+        job = queue_svc.enqueue(
+            "frame_extract",
+            "app.workers.reference_frame_extract.run",
+            str(reference.id),
+        )
+        return job.id
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "ref_frame_extract_enqueue_failed",
+            reference_id=str(reference.id),
+            error=str(exc),
+        )
+        return None
+
+
+def remirror_media(session: Session, reference: ContentReference) -> ContentReference:
+    """Re-download the source media into S3.
+
+    `_mirror_to_s3` is fail-open at import time, so `media_s3_key` can be
+    NULL when the IG CDN signature expired between the scrape and the
+    import. Repurpose mode has nothing to cut in that case, so this is
+    the recovery path: retry the stored CDN URL, and if that is dead,
+    ask the scraper for a freshly-signed one.
+    """
+    meta = dict(reference.metadata_json or {})
+    urls = meta.get("ig_media_urls") or []
+    candidate = urls[0] if isinstance(urls, list) and urls else None
+
+    mirrored = _mirror_to_s3(candidate, reference.project_id) if candidate else None
+
+    if mirrored is None and reference.source_external_id:
+        # Stored URL is dead — pull a fresh signature from the scraper.
+        try:
+            raw = scraper_bridge.fetch_ig_post(reference.source_external_id)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"could not re-fetch the source post: {exc}",
+            ) from exc
+        fresh = (raw or {}).get("media_urls") or []
+        if fresh:
+            meta["ig_media_urls"] = fresh
+            mirrored = _mirror_to_s3(fresh[0], reference.project_id)
+
+    if mirrored is None:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="could not mirror the source media — the CDN URL is unreachable",
+        )
+
+    key, content_type = mirrored
+    reference.media_s3_key = key
+    meta["media_content_type"] = content_type
+    if content_type.startswith("image/"):
+        reference.poster_s3_key = key
+    else:
+        # A fresh video invalidates the old frame set — clearing the keys
+        # makes the extractor re-run instead of short-circuiting.
+        meta.pop("frame_s3_keys", None)
+        meta.pop("frame_records", None)
+        meta.pop("scene_boundaries_sec", None)
+    reference.metadata_json = meta
+    session.add(reference)
+    session.flush()
+    session.refresh(reference)
+
+    if not content_type.startswith("image/"):
+        enqueue_frame_extract(reference)
+    return reference
 
 
 def list_(

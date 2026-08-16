@@ -40,8 +40,17 @@ from app.services.presets import PRESETS
 _IMAGE_FRIENDLY_PRESETS = {"ig_feed_45", "ig_feed_11"}
 
 
-def _scene_video_keys_for_variant(session, scenario: Scenario, preset_key: str) -> List[str]:
-    """Return the scene video S3 keys for the variant's aspect group, in scene order."""
+def _scene_video_keys_for_variant(
+    session, scenario: Scenario, preset_key: str
+) -> tuple[List[str], List[float]]:
+    """Scene video S3 keys + their real durations, in scene order.
+
+    The durations are the ones ffprobe measured on the produced clips
+    (stamped on `media_assets.duration_sec`), not the scenario's
+    requested ones. Text windows and per-scene voiceover offsets are
+    computed from these, so any rounding the encoder did stays
+    accounted for instead of compounding across scenes.
+    """
     preset = PRESETS[preset_key]
     aspect = preset.aspect
 
@@ -52,6 +61,7 @@ def _scene_video_keys_for_variant(session, scenario: Scenario, preset_key: str) 
     ).all()
 
     keys: List[str] = []
+    durations: List[float] = []
     for r in rows:
         if r.video_asset_id is None:
             raise renderer_svc.FFmpegError(
@@ -61,9 +71,14 @@ def _scene_video_keys_for_variant(session, scenario: Scenario, preset_key: str) 
         if asset is None:
             raise renderer_svc.FFmpegError(f"video asset {r.video_asset_id} not found")
         keys.append(asset.s3_key)
+        durations.append(float(asset.duration_sec) if asset.duration_sec else 0.0)
     if not keys:
         raise renderer_svc.FFmpegError(f"no scene_renders found for aspect={aspect}")
-    return keys
+    # A single unmeasured clip makes the whole offset chain wrong, so
+    # fall back wholesale rather than mixing measured and guessed values.
+    if any(d <= 0 for d in durations):
+        durations = []
+    return keys, durations
 
 
 def _scene_image_inputs_for_variant(
@@ -302,6 +317,20 @@ def _publish_as_carousel(*, session, scenario: Scenario, variant: RenderVariant)
     }
 
 
+def _source_audio_mode(scenario: Scenario, is_repurpose: bool) -> str:
+    """What compose does with the audio the scene videos carry.
+
+    Non-repurpose scenarios keep the CP-M5 behaviour (`drop`) so their
+    ffmpeg argv is unchanged. Repurpose defaults to `keep` — the
+    source's trending audio is a large part of why it performed — and
+    the admin can override per scenario via the segment plan.
+    """
+    if not is_repurpose:
+        return "drop"
+    mode = (scenario.segment_plan or {}).get("source_audio_mode")
+    return mode if mode in ("keep", "duck", "drop") else "keep"
+
+
 def run(variant_id: str) -> dict:
     variant_uuid = uuid.UUID(variant_id)
 
@@ -322,6 +351,7 @@ def run(variant_id: str) -> dict:
         from app.services import scenarios as scenarios_svc
 
         source_kind = scenarios_svc.scenario_source_kind(session, scenario)
+        is_repurpose = (scenario.production_mode or "recreate") == "repurpose"
 
         # Shortcut: when the source is image-only (photo/carousel) AND
         # the target preset publishes natively as an image carousel
@@ -329,8 +359,11 @@ def run(variant_id: str) -> dict:
         # per-scene `image_asset_id`s straight into `final_asset_ids`
         # and let the publisher hand them to IG's CAROUSEL_ALBUM
         # endpoint. Saves 4-7 min of zoompan compose per variant.
+        # Repurpose never takes this path — its renders hold cut video,
+        # not stills, regardless of what the source post type was.
         if (
-            source_kind in ("photo", "carousel")
+            not is_repurpose
+            and source_kind in ("photo", "carousel")
             and variant.preset_key in _IMAGE_FRIENDLY_PRESETS
         ):
             return _publish_as_carousel(
@@ -343,12 +376,12 @@ def run(variant_id: str) -> dict:
         scene_image_keys: List[str] = []
         scene_durations: List[float] = []
         try:
-            if source_kind in ("photo", "carousel"):
+            if not is_repurpose and source_kind in ("photo", "carousel"):
                 scene_image_keys, scene_durations = _scene_image_inputs_for_variant(
                     session, scenario, variant.preset_key
                 )
             else:
-                scene_video_keys = _scene_video_keys_for_variant(
+                scene_video_keys, scene_durations = _scene_video_keys_for_variant(
                     session, scenario, variant.preset_key
                 )
         except renderer_svc.FFmpegError as exc:
@@ -363,6 +396,18 @@ def run(variant_id: str) -> dict:
         # both would double the first scene's audio — the scenario's
         # voiceover_asset_id points at clip 0 in per-scene mode).
         scene_voiceovers = _scene_voiceovers(session, scenario)
+
+        # Repurpose durations come off the segment plan, not the
+        # scenario JSON: the plan is what the cut actually used, so the
+        # text windows and voice-bus offsets line up with the frames.
+        if is_repurpose and not scene_durations:
+            from app.services import segments as segments_svc
+
+            scene_durations = [
+                s.duration_sec
+                for s in segments_svc.plan_from_json(scenario.segment_plan)
+                if s.action != "drop"
+            ]
 
         # The reel pipeline needs scene durations too now — voice-bus
         # offsets are computed from them (slideshow already had them).
@@ -388,6 +433,7 @@ def run(variant_id: str) -> dict:
             voiceover_key=None if scene_voiceovers else _voiceover_key(session, scenario),
             music_key=_music_key(session, scenario),
             outro_video_key=_outro_key(session, scenario),
+            source_audio_mode=_source_audio_mode(scenario, is_repurpose),
         )
 
         variants_svc.mark_composing(session, variant)

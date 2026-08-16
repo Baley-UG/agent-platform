@@ -9,7 +9,7 @@ pipeline state.
 from __future__ import annotations
 
 import uuid
-from typing import List
+from typing import List, Optional
 
 from sqlalchemy import func
 from sqlmodel import Session, select
@@ -32,6 +32,26 @@ def _signed_url(s3_key: str) -> str | None:
     except Exception as exc:  # noqa: BLE001
         logger.warning("progress_presign_failed", key=s3_key, error=str(exc))
         return None
+
+
+def _segment_plan_payload(scenario: Scenario) -> Optional[dict]:
+    """The stored cut list plus presigned frame thumbs and the
+    source-footage ratio. Returns None for non-repurpose scenarios."""
+    plan = scenario.segment_plan
+    if not plan:
+        return None
+    from app.services import segments as segments_svc
+
+    enriched = []
+    for seg in plan.get("segments") or []:
+        key = seg.get("frame_s3_key")
+        enriched.append({**seg, "frame_url": _signed_url(key) if key else None})
+    return {
+        **plan,
+        "segments": enriched,
+        "source_ratio": segments_svc.source_ratio(plan),
+        "total_duration_sec": segments_svc.total_duration_sec(plan),
+    }
 
 
 def build(session: Session, scenario: Scenario) -> dict:
@@ -73,6 +93,16 @@ def build(session: Session, scenario: Scenario) -> dict:
                     if r.init_image_s3_key
                     else None
                 ),
+                # Repurpose — the source-video window this cell was cut
+                # from, so the panel can label each card "0.00–2.40s"
+                # and offer a keep/replace/drop toggle per segment.
+                "source_start_sec": (
+                    float(r.source_start_sec) if r.source_start_sec is not None else None
+                ),
+                "source_end_sec": (
+                    float(r.source_end_sec) if r.source_end_sec is not None else None
+                ),
+                "segment_action": r.segment_action,
                 "status": r.status,
                 "error": r.error,
             }
@@ -149,6 +179,11 @@ def build(session: Session, scenario: Scenario) -> dict:
             # the panel saw status=pending_review with no script content
             # and looked like the analysis hadn't run.
             "scenario_json": scenario.scenario_json,
+            "production_mode": scenario.production_mode,
+            # Repurpose cut list. The panel's segment editor renders
+            # from this; `source_ratio` is how much of the output is
+            # verbatim source footage.
+            "segment_plan": _segment_plan_payload(scenario),
             "target_variants": list(scenario.target_variants or []),
             "target_aspect_groups": list(scenario.target_aspect_groups or []),
             "quality_tier": scenario.quality_tier,

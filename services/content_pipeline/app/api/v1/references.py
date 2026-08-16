@@ -182,6 +182,26 @@ def archive(
     return svc.to_read(svc.archive(session, project.id, reference_id), session=session)
 
 
+@router.post(
+    "/{reference_id}/remirror",
+    response_model=ReferenceRead,
+    summary="Re-download the source media into S3",
+)
+def remirror(
+    reference_id: uuid.UUID,
+    project: Project = Depends(get_project),
+    session: Session = Depends(get_session),
+) -> ReferenceRead:
+    """Recovery path for references whose CDN mirror failed at import.
+
+    Repurpose mode cuts the actual source file, so a NULL
+    `media_s3_key` blocks the whole pipeline. Retries the stored CDN
+    URL, then a freshly-signed one from the scraper.
+    """
+    reference = svc.get(session, project.id, reference_id)
+    return svc.to_read(svc.remirror_media(session, reference), session=session)
+
+
 @router.get("/{reference_id}/usage-check", response_model=UsageCheck)
 def usage_check(
     reference_id: uuid.UUID,

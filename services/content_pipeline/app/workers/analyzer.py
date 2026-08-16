@@ -19,6 +19,7 @@ from app.models.scenarios import Scenario
 from app.services import generation_calls as calls_svc
 from app.services import model_router
 from app.services import scenarios as scenarios_svc
+from app.services import segments as segments_svc
 from app.services.analyzer import analyze_reference
 from app.services.database import session_scope
 from app.services.providers.llm.base import LLMProvider, VisionInput
@@ -117,6 +118,52 @@ def _collect_vision_inputs(reference: ContentReference) -> list[VisionInput]:
     return inputs[:_MAX_VISION_IMAGES]
 
 
+def _inline_s3_image(key: str) -> Optional[VisionInput]:
+    """Download an S3 object and wrap it as a base64 VisionInput.
+
+    Presigned URLs to our private S3 (`http://minio:9000/...`) are not
+    reachable from OpenRouter, so vision inputs always travel inline.
+    Returns None on any failure — a missing frame degrades the prompt,
+    it doesn't fail the job.
+    """
+    import base64
+    import io as _io
+
+    from app.core import s3 as s3lib
+    from app.core.config import settings
+
+    try:
+        buf = _io.BytesIO()
+        s3lib.client().download_fileobj(settings.S3_BUCKET, key, buf)
+        head = s3lib.head_object(key) or {}
+        return VisionInput(
+            base64=base64.b64encode(buf.getvalue()).decode("ascii"),
+            mime_type=head.get("ContentType") or _guess_mime_from_key(key),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("vision_s3_inline_failed", key=key, error=str(exc))
+        return None
+
+
+# Repurpose sends one frame per segment so the model can judge each cut
+# on its own. More images than recreate mode (which sends a cover shot),
+# but the decision is per-segment so the cost is the point.
+_MAX_SEGMENT_VISION_IMAGES = 10
+
+
+def _segment_vision_inputs(segments: list) -> list[VisionInput]:
+    """One representative frame per segment, index-aligned with the
+    SEGMENT MAP in the prompt."""
+    inputs: list[VisionInput] = []
+    for seg in segments[:_MAX_SEGMENT_VISION_IMAGES]:
+        if not seg.frame_s3_key:
+            continue
+        vi = _inline_s3_image(seg.frame_s3_key)
+        if vi is not None:
+            inputs.append(vi)
+    return inputs
+
+
 def _guess_mime_from_key(key: str) -> str:
     """Best-effort mime guess from an S3 key extension."""
     lower = key.lower()
@@ -140,6 +187,42 @@ def _build_provider(provider_name: str) -> LLMProvider:
     if provider_name == "openrouter":
         return OpenRouterProvider()
     raise NotImplementedError(f"LLM provider not yet implemented: {provider_name}")
+
+
+def _merge_decisions_into_plan(plan: Optional[dict], scenario_json: dict) -> dict:
+    """Copy `action` / `replace_prompt` / `replace_reason` from the
+    analyzer's scenes onto the matching plan segments.
+
+    Boundaries stay authoritative on the plan side — the LLM never moves
+    a cut point, it only labels one. `source_audio_mode` is lifted from
+    the scenario so the compose stage reads it off the plan.
+    """
+    merged = dict(plan or {})
+    by_segment = {}
+    for scene in scenario_json.get("scenes") or []:
+        try:
+            by_segment[int(scene["segment_idx"])] = scene
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    out = []
+    for seg in merged.get("segments") or []:
+        scene = by_segment.get(seg.get("idx"))
+        if scene:
+            action = scene.get("action")
+            seg = {
+                **seg,
+                "action": action if action in segments_svc.ACTIONS else "keep",
+                "replace_prompt": scene.get("replace_prompt"),
+                "match_reason": scene.get("replace_reason"),
+            }
+        out.append(seg)
+    merged["segments"] = out
+
+    audio_mode = scenario_json.get("source_audio_mode")
+    if audio_mode in segments_svc.SOURCE_AUDIO_MODES:
+        merged["source_audio_mode"] = audio_mode
+    return merged
 
 
 def run(scenario_id: str, brand_style_suffix: Optional[str] = None) -> dict:
@@ -178,11 +261,37 @@ def run(scenario_id: str, brand_style_suffix: Optional[str] = None) -> dict:
 
         provider = _build_provider(route.provider)
 
+        mode = scenario.production_mode or "recreate"
+
+        # Repurpose plans the cut list BEFORE the LLM call — the plan is
+        # what the prompt asks the model to annotate, and it is persisted
+        # so an admin can edit boundaries even if the LLM call fails.
+        segments: list = []
+        if mode == "repurpose":
+            segments = segments_svc.plan_segments(reference)
+            if not segments:
+                scenarios_svc.mark_failed(
+                    session,
+                    scenario,
+                    "could not derive segments from the reference — is the source video mirrored?",
+                )
+                return {"ok": False, "error": "no segments"}
+            scenario.segment_plan = segments_svc.plan_to_json(
+                segments, reference=reference
+            )
+            session.add(scenario)
+            session.flush()
+
         # Build vision_inputs from the reference's mirrored image (or
         # the still-live IG CDN URL as fallback) so the LLM actually
         # SEES what's in the reference instead of hallucinating from
-        # caption text alone.
-        vision_inputs = _collect_vision_inputs(reference)
+        # caption text alone. Repurpose instead sends one frame per
+        # segment, index-aligned with the prompt's SEGMENT MAP.
+        vision_inputs = (
+            _segment_vision_inputs(segments)
+            if segments
+            else _collect_vision_inputs(reference)
+        )
 
         try:
             scenario_json, response = asyncio.run(
@@ -192,6 +301,8 @@ def run(scenario_id: str, brand_style_suffix: Optional[str] = None) -> dict:
                     provider=provider,
                     brand_style_suffix=brand_style_suffix,
                     vision_inputs=vision_inputs,
+                    production_mode=mode,
+                    segments=segments or None,
                 )
             )
         except Exception as exc:  # noqa: BLE001
@@ -224,6 +335,16 @@ def run(scenario_id: str, brand_style_suffix: Optional[str] = None) -> dict:
             latency_ms=response.latency_ms,
             status_="success",
         )
+
+        # Fold the LLM's per-segment decisions back into the stored plan
+        # so the panel's segment editor and the cut worker read one
+        # source of truth (the plan), not two.
+        if segments:
+            scenario.segment_plan = _merge_decisions_into_plan(
+                scenario.segment_plan, scenario_json
+            )
+            session.add(scenario)
+            session.flush()
 
         scenarios_svc.mark_pending_review(session, scenario, scenario_json)
         return {

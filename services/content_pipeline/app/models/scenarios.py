@@ -33,6 +33,11 @@ SCENARIO_STATUSES = (
     "images_ready",
     "generating_videos",
     "videos_ready",
+    # repurpose mode: real segments are cut out of the source reel instead
+    # of being synthesized. Sits where generating_videos/videos_ready sit
+    # for the recreate pipeline.
+    "cutting_segments",
+    "segments_ready",
     "generating_audio",
     "audio_ready",
     "composing",
@@ -114,11 +119,29 @@ class Scenario(SQLModel, table=True):
     # ffmpeg). 'brand_build' runs the director LLM against the brand
     # asset library and assembles scenes from existing brand media —
     # AI synth only as gap filler. 'inspire' produces only the hook +
-    # CTA + structure notes, no visual production at all.
+    # CTA + structure notes, no visual production at all. 'repurpose'
+    # cuts real segments out of the source reel and rebrands them —
+    # no image/video synthesis at all.
     production_mode: str = Field(
         default="recreate",
         sa_column=sa.Column(
             sa.String(16), nullable=False, server_default="recreate"
+        ),
+    )
+
+    # repurpose mode — the cut list derived from the source video's scene
+    # boundaries. Admin-editable before the cut runs. Shape documented in
+    # `app/services/segments.py`.
+    segment_plan: Optional[dict] = Field(default=None, sa_column=sa.Column(JSONB, nullable=True))
+
+    # Pinned brand kit for the branding pass (logo overlay, intro/outro,
+    # voice). NULL → the project's `is_default` kit is used.
+    brand_kit_id: Optional[uuid.UUID] = Field(
+        default=None,
+        sa_column=sa.Column(
+            PGUUID(as_uuid=True),
+            sa.ForeignKey(f"{SCHEMA_NAME}.brand_kits.id", ondelete="SET NULL"),
+            nullable=True,
         ),
     )
 

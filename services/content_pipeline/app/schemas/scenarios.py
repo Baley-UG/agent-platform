@@ -26,7 +26,9 @@ class ScenarioCreate(BaseModel):
     # Production mode. Defaults to 'recreate' (legacy AI-synth pipeline).
     # 'brand_build' opts into the director LLM + brand asset library.
     # 'inspire' produces hook/CTA only — no visual production.
-    production_mode: Literal["recreate", "brand_build", "inspire"] = "recreate"
+    # 'repurpose' cuts real segments out of the source reel — no image
+    # or video synthesis at all. Requires a mirrored source video.
+    production_mode: Literal["recreate", "brand_build", "inspire", "repurpose"] = "recreate"
     # Reuse policy bypass — required when the reference has been used before
     # in projects with reuse_policy='warn'. Ignored when policy='block' (always denied)
     # or 'silent' (never enforced).
@@ -46,6 +48,29 @@ class ScenarioUpdate(BaseModel):
     default_hashtags: Optional[List[str]] = None
 
 
+class SegmentPatch(BaseModel):
+    """One edited entry in the repurpose cut list.
+
+    `idx` identifies the segment; every other field is optional so the
+    panel can flip an action without resending boundaries.
+    """
+
+    idx: int
+    start_sec: Optional[float] = Field(default=None, ge=0)
+    end_sec: Optional[float] = Field(default=None, ge=0)
+    action: Optional[Literal["keep", "replace", "drop"]] = None
+    replace_prompt: Optional[str] = None
+    replace_asset_id: Optional[str] = None
+
+
+class SegmentPlanUpdate(BaseModel):
+    """PATCH body for `/scenarios/{id}/segment-plan`."""
+
+    segments: Optional[List[SegmentPatch]] = None
+    fit_mode: Optional[Literal["cover", "contain"]] = None
+    source_audio_mode: Optional[Literal["keep", "duck", "drop"]] = None
+
+
 class ScenarioRead(BaseModel):
     id: uuid.UUID
     project_id: uuid.UUID
@@ -58,6 +83,8 @@ class ScenarioRead(BaseModel):
     quality_tier: str
     generation_cost_usd: float
     production_mode: str = "recreate"
+    segment_plan: Optional[dict] = None
+    brand_kit_id: Optional[uuid.UUID] = None
     default_caption: Optional[str] = None
     default_hashtags: Optional[List[str]] = None
     voiceover_asset_id: Optional[uuid.UUID] = None

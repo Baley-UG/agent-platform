@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlmodel import Session
 
 from app.api.v1.deps import get_project, get_session, require_api_key
@@ -21,13 +21,19 @@ from app.schemas.render_variants import (
     RenderVariantRead,
     ReselectMusicRequest,
 )
-from app.schemas.scenarios import ScenarioCreate, ScenarioRead, ScenarioUpdate
+from app.schemas.scenarios import (
+    ScenarioCreate,
+    ScenarioRead,
+    ScenarioUpdate,
+    SegmentPlanUpdate,
+)
 from app.schemas.scene_renders import RegenerateImageRequest, RegenerateVideoRequest, SceneRenderRead
 from app.services import queue
 from app.services import render_variants as variants_svc
 from app.services import scenario_progress as progress_svc
 from app.services import scenarios as svc
 from app.services import scene_renders as renders_svc
+from app.services import segments as segments_svc
 
 router = APIRouter(
     prefix="/projects/{project_id}/scenarios",
@@ -81,6 +87,17 @@ def _enqueue_video_gen(scene_render_id: uuid.UUID, motion_override: Optional[str
         # Don't 500 — admin panel will see `*_job_id=None` and the
         # downstream worker won't have run. But DO log so the cause
         # (Redis down, queue config mismatch, etc.) isn't invisible.
+        logger.exception("enqueue_failed", error=str(exc))
+        return None
+
+
+def _enqueue_segment_recut(scene_render_id: uuid.UUID) -> Optional[str]:
+    try:
+        job = queue.enqueue(
+            "segment_cut", "app.workers.segment_cut.run_one", str(scene_render_id)
+        )
+        return job.id
+    except Exception as exc:  # noqa: BLE001
         logger.exception("enqueue_failed", error=str(exc))
         return None
 
@@ -220,6 +237,99 @@ def start_images(
     pending = [r for r in renders_svc.list_for_scenario(session, scenario.id) if r.status == "pending"]
     for render in pending:
         _enqueue_image_gen(render.id)
+    return ScenarioRead.model_validate(scenario)
+
+
+@router.post(
+    "/{scenario_id}/start-segments",
+    response_model=ScenarioRead,
+    summary="Cut real segments from the source video (repurpose mode)",
+)
+def start_segments(
+    scenario_id: uuid.UUID,
+    project: Project = Depends(get_project),
+    session: Session = Depends(get_session),
+) -> ScenarioRead:
+    """Repurpose entry point — the counterpart of `start-images`.
+
+    Transitions `approved → cutting_segments`, materializes
+    `scene_renders`, stamps each cell's source window from the segment
+    plan, then enqueues one ffmpeg cut job per aspect group (plus an
+    image_gen job for any cell the analyzer marked `replace`).
+    """
+    scenario = svc.start_segment_cut(session, project.id, scenario_id)
+    segments_svc.start_segment_cuts(session, scenario)
+    return ScenarioRead.model_validate(scenario)
+
+
+@router.post(
+    "/{scenario_id}/segments/{segment_idx}/recut",
+    response_model=List[SceneRenderRead],
+    summary="Re-cut one segment after a boundary edit",
+)
+def recut_segment(
+    scenario_id: uuid.UUID,
+    segment_idx: int,
+    aspect_ratio: Optional[str] = None,
+    project: Project = Depends(get_project),
+    session: Session = Depends(get_session),
+) -> List[SceneRenderRead]:
+    """Re-cut a single segment. Without `aspect_ratio` every aspect
+    master for that segment is re-cut; with one, just that variant."""
+    scenario = svc.get(session, project.id, scenario_id)
+    rows = [
+        r
+        for r in renders_svc.list_for_scenario(session, scenario.id)
+        if r.scene_idx == segment_idx
+        and (aspect_ratio is None or r.aspect_ratio == aspect_ratio)
+    ]
+    if not rows:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"no scene_render for segment_idx={segment_idx}",
+        )
+    for row in rows:
+        _enqueue_segment_recut(row.id)
+    return [SceneRenderRead.model_validate(r) for r in rows]
+
+
+@router.patch(
+    "/{scenario_id}/segment-plan",
+    response_model=ScenarioRead,
+    summary="Edit the segment cut list (boundaries / keep-replace-drop)",
+)
+def patch_segment_plan(
+    scenario_id: uuid.UUID,
+    payload: SegmentPlanUpdate,
+    project: Project = Depends(get_project),
+    session: Session = Depends(get_session),
+) -> ScenarioRead:
+    """Admin edits to the cut list.
+
+    Only allowed before the cut runs (`pending_review`, `approved`) or
+    between runs (`segments_ready`) — editing mid-cut would leave the
+    stamped render windows disagreeing with the plan.
+    """
+    scenario = svc.get(session, project.id, scenario_id)
+    if scenario.status not in ("pending_review", "approved", "segments_ready"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"segment plan is not editable in status={scenario.status}; "
+                "edit in pending_review / approved, or after segments_ready"
+            ),
+        )
+    try:
+        scenario.segment_plan = segments_svc.apply_plan_update(
+            scenario.segment_plan, payload.model_dump(exclude_unset=True)
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    session.add(scenario)
+    session.flush()
+    session.refresh(scenario)
     return ScenarioRead.model_validate(scenario)
 
 

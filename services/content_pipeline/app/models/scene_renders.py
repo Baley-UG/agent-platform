@@ -113,6 +113,21 @@ class SceneRender(SQLModel, table=True):
         default=None, sa_column=sa.Column(sa.String(512), nullable=True)
     )
 
+    # repurpose mode — the source-video window this cell was cut from.
+    # Mirrors the matching `scenarios.segment_plan.segments[]` entry so a
+    # single render can be re-cut without re-reading the whole plan.
+    # `segment_action` ∈ {keep, replace, drop}: `keep` cuts real footage,
+    # `replace` falls through to the existing image_gen/video_gen path.
+    source_start_sec: Optional[float] = Field(
+        default=None, sa_column=sa.Column(sa.Numeric(8, 3), nullable=True)
+    )
+    source_end_sec: Optional[float] = Field(
+        default=None, sa_column=sa.Column(sa.Numeric(8, 3), nullable=True)
+    )
+    segment_action: Optional[str] = Field(
+        default=None, sa_column=sa.Column(sa.String(16), nullable=True)
+    )
+
     status: str = Field(default="pending", sa_column=sa.Column(sa.String(32), nullable=False, server_default="pending"))
     error: Optional[str] = Field(default=None, sa_column=sa.Column(sa.Text, nullable=True))
 

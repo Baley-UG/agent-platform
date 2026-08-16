@@ -99,20 +99,48 @@ def pipeline_actions(session: Session, scenario: Scenario) -> dict:
         approved → start_images → images_ready → start_videos →
         videos_ready → start_audio → audio_ready → start_compose →
         composing → final_pending_review → approve_final.
+
+    Repurpose mode replaces the image+video legs with a single cut step:
+        approved → start_segments → cutting_segments → segments_ready →
+        start_compose → composing → final_pending_review → approve_final.
     """
     kind = scenario_source_kind(session, scenario)
+    mode = getattr(scenario, "production_mode", None) or "recreate"
+    status = scenario.status
+
+    if mode == "repurpose":
+        # No synthesis at all: real segments are cut from the source.
+        # Audio generation is optional — the source's own (trending)
+        # audio ships by default, so `segments_ready` can go straight
+        # to compose without a TTS pass.
+        return {
+            "source_kind": kind,
+            "production_mode": mode,
+            "needs_video_generation": False,
+            "needs_audio_generation": False,
+            "needs_segment_cut": True,
+            "can_start_images": False,
+            "can_start_videos": False,
+            "can_start_segments": status == "approved",
+            "can_start_audio": status == "segments_ready",
+            "can_start_compose": status in ("segments_ready", "audio_ready"),
+            "can_approve_final": status == "final_pending_review",
+        }
+
     needs_video = kind in ("reel", "video", "unknown")
     needs_audio = needs_video  # voiceover only meaningful for video output
-    status = scenario.status
 
     return {
         "source_kind": kind,
+        "production_mode": mode,
         "needs_video_generation": needs_video,
         "needs_audio_generation": needs_audio,
+        "needs_segment_cut": False,
         "can_start_images": status == "approved",
         # Photo/carousel sources can skip straight from images_ready to
         # compose. Reel/video sources go through video + audio first.
         "can_start_videos": status == "images_ready" and needs_video,
+        "can_start_segments": False,
         "can_start_audio": status == "videos_ready" and needs_audio,
         "can_start_compose": (
             (status == "images_ready" and not needs_video)
@@ -159,7 +187,9 @@ _ALLOWED_NEXT = {
     "draft": {"analyzing", "failed"},
     "analyzing": {"pending_review", "failed", "draft"},
     "pending_review": {"approved", "analyzing", "draft", "failed"},
-    "approved": {"generating_images", "analyzing", "failed"},
+    # `approved → cutting_segments` is the repurpose entry point; it
+    # skips the image and video legs entirely.
+    "approved": {"generating_images", "cutting_segments", "analyzing", "failed"},
     "generating_images": {"images_ready", "failed"},
     # `images_ready → composing` lets photo/carousel sources skip the
     # video and audio generation steps entirely; the static images go
@@ -171,6 +201,12 @@ _ALLOWED_NEXT = {
     # `videos_ready → composing` lets reels skip the voiceover step when
     # the scenario has no narration (audio_mood: silent everywhere).
     "videos_ready": {"generating_audio", "composing", "generating_videos", "failed"},
+    # Repurpose: one cut state covers both the ffmpeg cuts and any
+    # AI-replaced segments, so there is a single ready state. Compose
+    # can run straight from it (the source audio ships as-is) or the
+    # admin can add a voiceover pass first.
+    "cutting_segments": {"segments_ready", "failed"},
+    "segments_ready": {"generating_audio", "composing", "cutting_segments", "failed"},
     "generating_audio": {"audio_ready", "failed"},
     # audio_ready can re-enter generating_audio for voiceover regenerate.
     "audio_ready": {"composing", "generating_audio", "failed"},
@@ -246,6 +282,18 @@ def create(
     """Spawn a draft scenario. Doesn't run the analyzer — that's a follow-up enqueue."""
     reference = references_svc.get(session, project.id, payload.reference_id)
     _check_reuse(session, project, reference, force=payload.force)
+
+    # Repurpose cuts the actual source file — without a mirrored video
+    # there is nothing to cut, and the failure would otherwise surface
+    # deep in the cut worker instead of at create time.
+    if getattr(payload, "production_mode", "recreate") == "repurpose" and not reference.media_s3_key:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "reference has no mirrored source video; "
+                f"POST /references/{reference.id}/remirror first"
+            ),
+        )
 
     # Derive target_variants from the source if the caller didn't pin one.
     # Admin panel typically omits it — the reference's media_type implies
@@ -368,6 +416,7 @@ def start_image_generation(session: Session, project_id: uuid.UUID, scenario_id:
     scene_renders + enqueue image_gen jobs (see `scene_renders` service).
     """
     row = get(session, project_id, scenario_id)
+    _reject_if_repurpose(row, "images")
     if row.status != "approved":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -385,6 +434,7 @@ def start_video_generation(session: Session, project_id: uuid.UUID, scenario_id:
     video_gen jobs for each scene_render that's `image_ready`.
     """
     row = get(session, project_id, scenario_id)
+    _reject_if_repurpose(row, "videos")
     if row.status != "images_ready":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -397,10 +447,59 @@ def start_video_generation(session: Session, project_id: uuid.UUID, scenario_id:
     return row
 
 
+def _reject_if_repurpose(row: Scenario, step: str) -> None:
+    """Repurpose has no image or video synthesis leg — hitting those
+    endpoints means the caller is on the wrong pipeline."""
+    if (row.production_mode or "recreate") == "repurpose":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"scenario is in repurpose mode — there is no {step} step; "
+                "use POST /start-segments instead"
+            ),
+        )
+
+
+def start_segment_cut(session: Session, project_id: uuid.UUID, scenario_id: uuid.UUID) -> Scenario:
+    """Move from `approved` (first run) or `segments_ready` (re-cut after a
+    plan edit) into `cutting_segments`.
+
+    Caller materializes scene_renders, stamps the source windows and
+    enqueues the cut jobs — see `segments.start_segment_cuts`.
+    """
+    row = get(session, project_id, scenario_id)
+    if (row.production_mode or "recreate") != "repurpose":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"segment cutting is repurpose-only; this scenario is in "
+                f"'{row.production_mode}' mode"
+            ),
+        )
+    if row.status not in ("approved", "segments_ready"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"cannot cut segments from status={row.status}; approve the scenario first",
+        )
+    if not row.segment_plan:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="scenario has no segment_plan — run the analyzer first",
+        )
+    transition(row, "cutting_segments")
+    session.add(row)
+    session.flush()
+    session.refresh(row)
+    return row
+
+
 def start_audio_generation(session: Session, project_id: uuid.UUID, scenario_id: uuid.UUID) -> Scenario:
     """Move from `videos_ready` (first run) or `audio_ready` (regenerate) to `generating_audio`."""
     row = get(session, project_id, scenario_id)
-    if row.status not in ("videos_ready", "audio_ready"):
+    # Repurpose enters from `segments_ready` — its voiceover pass is
+    # optional (the source audio ships by default), so it is reachable
+    # but never required.
+    if row.status not in ("videos_ready", "audio_ready", "segments_ready"):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"cannot start audio from status={row.status}; finish videos_ready first",
@@ -423,9 +522,10 @@ def start_compose(session: Session, project_id: uuid.UUID, scenario_id: uuid.UUI
     """Move into `composing` from the earliest stage allowed for this scenario's source kind.
 
     Allowed entry statuses:
-      * `images_ready` — photo/carousel sources (slideshow render, no video/audio stage).
-      * `videos_ready` — silent reel (skips voiceover).
-      * `audio_ready`  — full reel (voiceover already produced).
+      * `images_ready`   — photo/carousel sources (slideshow render, no video/audio stage).
+      * `videos_ready`   — silent reel (skips voiceover).
+      * `audio_ready`    — full reel (voiceover already produced).
+      * `segments_ready` — repurpose (cut segments carry the source audio).
       * `final_pending_review` / `approved_final` — recompose after an edit.
 
     The `_ALLOWED_NEXT` transition map enforces the same set; this gate
@@ -435,6 +535,7 @@ def start_compose(session: Session, project_id: uuid.UUID, scenario_id: uuid.UUI
     _COMPOSE_ENTRY_STATES = {
         "images_ready",
         "videos_ready",
+        "segments_ready",
         "audio_ready",
         "final_pending_review",
         "approved_final",
@@ -445,7 +546,7 @@ def start_compose(session: Session, project_id: uuid.UUID, scenario_id: uuid.UUI
             detail=(
                 f"cannot start compose from status={row.status}; "
                 "reach images_ready (photo/carousel), videos_ready (silent reel), "
-                "or audio_ready (full reel) first"
+                "segments_ready (repurpose), or audio_ready (full reel) first"
             ),
         )
     transition(row, "composing")

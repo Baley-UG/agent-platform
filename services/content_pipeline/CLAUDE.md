@@ -65,6 +65,7 @@ left off.
 | CP-M6.5 + CP-M8 (selective) | Captions, aggregate progress, dedup, curator | ✅ done | e11aa13 |
 | CP-M8.5 | Auth, users, project memberships (in content_pipeline) | ❌ superseded by CP-M9 | 131e23b |
 | CP-M9 | Auth centralized in main `app/`; gateway proxy; CP auth removed | ✅ done | 4b18615 |
+| CP-R1 | `repurpose` mode — cut real segments from the source reel | ✅ done | — |
 | CP-M8 (rest) | pgvector embeddings, webhooks, outpaint, Suno, etc. | ⏳ deferred | — |
 
 Status legend: ⏳ not started · 🔄 in progress · ✅ done · 🚧 blocked.
