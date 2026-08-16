@@ -134,11 +134,18 @@ def build_multicut_command(
 def s3_key_for_segment(
     project_id, scenario_id, idx: int, aspect: str
 ) -> str:
-    """Stable key shape, matching the scene-asset namespace."""
+    """Key for one cut segment, in the same namespace as scene videos.
+
+    Routed through `s3.make_key` for two reasons: it honours
+    `S3_ROOT_PREFIX` (so the bucket can be shared with other services),
+    and its uuid component makes every cut a fresh object. The latter
+    matters — a re-cut writes a NEW `media_assets` version, and the
+    prior version's `s3_key` has to keep pointing at the bytes it was
+    created from or rollback silently serves the replacement.
+    """
     aspect_slug = aspect.replace(":", "x")
-    return (
-        f"projects/{project_id}/scenes/"
-        f"{scenario_id}-segment-{idx:02d}-{aspect_slug}.mp4"
+    return s3lib.make_key(
+        project_id, "scenes", f"{scenario_id}-segment-{idx:02d}-{aspect_slug}.mp4"
     )
 
 

@@ -151,10 +151,28 @@ def test_empty_segment_list_is_rejected():
 
 def test_segment_key_is_project_namespaced_and_aspect_tagged():
     key = cutter.s3_key_for_segment("proj-1", "scen-1", 3, "9:16")
-    assert key == "projects/proj-1/scenes/scen-1-segment-03-9x16.mp4"
+    assert key.startswith("projects/proj-1/scenes/")
+    assert key.endswith("scen-1-segment-03-9x16.mp4")
 
 
 def test_segment_keys_differ_per_aspect():
     a = cutter.s3_key_for_segment("p", "s", 1, "9:16")
     b = cutter.s3_key_for_segment("p", "s", 1, "4:5")
     assert a != b
+
+
+def test_every_cut_gets_a_fresh_key():
+    """A re-cut writes a new media_assets version; reusing the key would
+    overwrite the bytes the prior version points at, so rollback would
+    silently serve the replacement."""
+    a = cutter.s3_key_for_segment("p", "s", 1, "9:16")
+    b = cutter.s3_key_for_segment("p", "s", 1, "9:16")
+    assert a != b
+
+
+def test_segment_key_honours_the_shared_bucket_root_prefix(monkeypatch):
+    from app.core import s3 as s3lib
+
+    monkeypatch.setattr(s3lib.settings, "S3_ROOT_PREFIX", "agent_platform", raising=False)
+    key = cutter.s3_key_for_segment("proj-1", "scen-1", 1, "9:16")
+    assert key.startswith("agent_platform/projects/proj-1/scenes/")
