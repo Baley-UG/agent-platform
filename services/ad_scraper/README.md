@@ -390,6 +390,23 @@ Through the platform gateway (global admin only), every route above is also
 at `/api/v1/ad-scraper/...` on port 8000, and appears in the main app's
 `/docs`.
 
+## `media_format` is the file, `media[]` is the network
+
+Easy to trip over, and it made the list response look like it was missing
+data it never had. `media_format` / `media_width` / `media_duration_sec`
+describe the **file** — `mp4`, 540, 23s. The **network** (TikTok, Facebook,
+Unity Ads) is the `media` facet.
+
+`GET /materials` now attaches the small facets to every row — `media`,
+`platform`, `channel`, `format` as `[{code, name}]` — plus `advertisers`
+(capped at 5) and `advertiser_count`. Two extra queries per page, not per
+row.
+
+`area` is excluded on purpose: measured over 1 923 materials it averages
+56.1 edges and peaks at 136, so a 50-row page would carry ~2 800 country
+entries. It stays on `GET /materials/{id}`, which returns every facet
+including `area` and `resource_element`.
+
 ## Field names that differ from the API's
 
 The wire format has two traps. Both are renamed on the way in:
