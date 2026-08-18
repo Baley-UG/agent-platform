@@ -221,6 +221,56 @@ The full record: everything from the list shape plus `asr`, `violation`, and
 three nested arrays — `resources[]`, `dimensions[]` (with facet `name` and
 `icon` resolved), `advertisers[]`. 404 when unknown.
 
+### `GET /ad-scraper/filters` — build the form from this
+
+One request returns every filter a job can carry, with its options and its
+constraints. **Do not hand-maintain an option list in the panel.** That is
+what this replaces: the two copies drifted, and the panel's copy was missing
+nine networks while asserting four it had guessed.
+
+```json
+{
+  "job": {
+    "page_to": {"type": "int", "min": 1, "max": 200, "default": 5, "note": "..."},
+    "order": {"type": "enum", "options": ["max_dt_desc", "..."], "default": "max_dt_desc"},
+    "mirror": {"type": "bool|null", "default": null, "note": "..."},
+    "app_id": {"type": "string", "note": "..."},
+    "rows_per_page": 50,
+    "max_rows_per_filter_set": 10000
+  },
+  "filters": [
+    {"key": "purpose", "type": "int", "required": true,
+     "options": [{"code": 1, "name": "App advertisers", "note": "..."}], "notes": ["..."]},
+    {"key": "media", "type": "int[]", "label": "Network",
+     "options": [{"code": "13", "name": "TikTok", "icon": "...", "materials": 321, "source": "observed"}],
+     "valid_codes": [1, 2, 3, "..."], "notes": ["..."]}
+  ],
+  "rejected_keys": {"keys": ["page", "order"], "note": "..."},
+  "read": {"sort": {"options": ["..."], "default": "impressions_desc"}}
+}
+```
+
+How to use each part:
+
+* **`options`** — render these. `materials` is how many creatives we hold for
+  that value, so sort by it to put the useful ones on top; `source` is
+  `observed` (from ingested data) or `seed` (measured but not yet ingested —
+  still valid upstream, just no local rows yet).
+* **`valid_codes`** on `media` — the *complete* accepted set, including codes
+  whose names we have never seen. Never offer a code outside it: one invalid
+  code fails the WHOLE upstream request with a parameter error, so the job
+  dies rather than ignoring it. Offer the unnamed ones as a raw-code input if
+  you want full coverage.
+* **`notes`** — written for the person building the form. They carry the
+  traps (`area` must not be string-joined, `isAllDate` overrides the date
+  range, a small network vanishes in a big filter).
+* **`rejected_keys`** — sending these inside `filters` is a 422.
+* **`pattern`** on `area` — validate client-side with it rather than
+  reimplementing the rule.
+
+The endpoint is a plain read with no auth beyond the usual gateway JWT, so
+fetch it once on mount and cache it for the session.
+
 ### `GET /ad-scraper/dimensions?kind=area`
 
 Feeds the filter dropdowns. Returns `{kind, code, name, icon, parent_code,
@@ -385,7 +435,7 @@ hint. Send `["US", "TR", "SA"]`.
 
 Valid code values come from `GET /dimensions?kind=…`; they are discovered from
 ingested data, so a fresh database lists none. For reference, `media` spans
-1-19, 21-23, 25-26, 28-31, 33-34 today.
+1-19, 21-23, 25-26, 28-34 today (20, 24, 27, 35, 36 are rejected).
 
 **Dates.** `isAllDate: 1` **overrides** `startDate`/`endDate` — sending both
 is accepted upstream and silently ignores the range (measured: identical

@@ -60,7 +60,7 @@ _APPID_DSL_KEY = "appid"
 _AREA_RE = re.compile(r"^[A-Z]{2}$")
 
 # Integer-code arrays. We check the shape, not a whitelist: the platform adds
-# codes without notice (`media` alone spans 1-19, 21-23, 25-26, 28-31, 33-34
+# codes without notice (`media` alone spans 1-19, 21-23, 25-26, 28-34
 # today), and rejecting a newly-valid code would be worse than forwarding it
 # and letting the upstream answer.
 _INT_CODE_KEYS = ("media", "platform", "format", "creativeType", "resourceElement", "category")
