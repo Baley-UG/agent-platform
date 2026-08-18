@@ -112,10 +112,27 @@ nonsense.
 | `media_url` | reliable | the source CDN URL. Dies at `media_url_expires_at`. Use it only as a fallback |
 | `violation` | object | a plain moderation label string, e.g. `"Human Exploitation"`. Null on most rows |
 | `asr` | — | the platform's auto-transcript. Populated on roughly a fifth of video creatives |
+| `slogan` | a headline beside a body | **the ad copy — the only text the source gives.** Populated on every row observed |
+| `description` | populated | declared by the upstream but **null on every row observed** |
+| `txt_url` | a landing page | declared, empty on every row observed |
 
 So a creative card reading "209 days on air · 26s · >10M impressions" comes
 from `run_days`, `media_duration_sec`, `impression_inc_2y_raw` — three
 different fields, none of them named what you would guess.
+
+### There is no ad title
+
+Don't design a card around headline + body. Probing the live schema (an
+invalid field fails GraphQL validation, a valid one passes it and then hits
+auth — the two error messages differ, which makes the probe reliable) shows
+that `creative.title`, `creative.text`, `creative.copy`, `creative.adText`,
+`material.title`, `material.description` and `material.marketingWord` **do
+not exist**. The web UI's own query asks for the same `slogan` + `description`
+pair we do, so it has nothing more either.
+
+Practically: render **`slogan`** as the creative's text, `asr` as an
+expandable transcript when present, and treat `description` / `txt_url` as
+fields that exist in the schema but will be empty.
 
 ---
 
@@ -265,9 +282,10 @@ escape hatch covers real use.
 
 ### The `filters` contract
 
-`filters` is the upstream GraphQL `variables` object, forwarded verbatim. Only
-**`purpose` is required** — omitting it fails validation upstream. Everything
-else is optional.
+`filters` is the upstream GraphQL `variables` object, forwarded verbatim.
+**`purpose` is the ONLY required key** — omitting it fails validation
+upstream. Everything else, `field` and `accurateSearch` included, is optional
+despite appearing in every example copied out of the web UI's network tab.
 
 `purpose` selects the corpus and only **1, 2, 3** are valid (4+ is a parameter
 error). The Meta family is densest under 3; 2 carries the AdMob/YouTube/Unity
