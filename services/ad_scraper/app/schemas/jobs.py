@@ -15,6 +15,8 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional
 
+import re
+
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.core.config import settings
@@ -45,6 +47,23 @@ _WORKER_OWNED_KEYS = frozenset({"page", "order"})
 # empty result that reads like "this app has no ads". `app_id` on JobCreate
 # builds the right DSL entry so nobody has to rediscover that.
 _APPID_DSL_KEY = "appid"
+
+# The upstream validates these strictly: ONE bad value fails the WHOLE request
+# with "Parameter error, please clear the filter and refresh" — it is never
+# ignored. All measured against the live endpoint.
+#
+# `area` is uppercase ISO-3166-1 alpha-2, one code per array element. Every
+# other shape is rejected: lowercase `tr`, ISO-3 `TUR`, an empty string, and —
+# the one that bit a real caller — two codes joined into one element
+# (`"TR;SA"` or `"TR,SA"`). A panel that string-joins its country multi-select
+# produces exactly that.
+_AREA_RE = re.compile(r"^[A-Z]{2}$")
+
+# Integer-code arrays. We check the shape, not a whitelist: the platform adds
+# codes without notice (`media` alone spans 1-19, 21-23, 25-26, 28-31, 33-34
+# today), and rejecting a newly-valid code would be worse than forwarding it
+# and letting the upstream answer.
+_INT_CODE_KEYS = ("media", "platform", "format", "creativeType", "resourceElement", "category")
 
 
 class JobCreate(BaseModel):
@@ -87,6 +106,74 @@ class JobCreate(BaseModel):
         if clashes:
             raise ValueError(f"filters must not contain {clashes} — use the page_from/page_to/order fields instead")
         return value
+
+    @field_validator("filters")
+    @classmethod
+    def _validate_filter_values(cls, value: Dict[str, Any]) -> Dict[str, Any]:
+        """Catch the malformed values the upstream rejects wholesale.
+
+        Every check here mirrors a measured upstream behaviour. Forwarding
+        these would turn a fixable mistake into a generic "Parameter error,
+        please clear the filter and refresh" with no clue which field was
+        wrong.
+        """
+        filters = value or {}
+
+        area = filters.get("area")
+        if area is not None:
+            if not isinstance(area, list):
+                raise ValueError('filters.area must be a list of country codes, e.g. ["TR", "US"]')
+            for code in area:
+                if not isinstance(code, str) or not _AREA_RE.match(code):
+                    hint = ""
+                    if isinstance(code, str) and any(sep in code for sep in ";,|/ "):
+                        parts = [p for p in re.split(r"[;,|/\s]+", code) if p]
+                        hint = f" Did you mean {parts}? Send one code per array element, not a joined string."
+                    elif isinstance(code, str) and code.upper() != code:
+                        hint = f" Codes are uppercase — try {code.upper()!r}."
+                    raise ValueError(
+                        f"filters.area contains {code!r}, which the upstream rejects. Each element must be an "
+                        f"uppercase ISO-3166-1 alpha-2 country code (two letters).{hint}"
+                    )
+
+        for key in _INT_CODE_KEYS:
+            codes = filters.get(key)
+            if codes is None:
+                continue
+            if not isinstance(codes, list):
+                raise ValueError(f"filters.{key} must be a list of integer codes, e.g. [13]")
+            for code in codes:
+                if isinstance(code, bool) or not isinstance(code, int) or code <= 0:
+                    raise ValueError(
+                        f"filters.{key} contains {code!r}; it must be a list of positive integer codes. "
+                        f"An unknown code fails the whole upstream request rather than being ignored — "
+                        f"read the valid values from GET /dimensions."
+                    )
+
+        return filters
+
+    @model_validator(mode="after")
+    def _check_date_window(self) -> "JobCreate":
+        """Refuse the two date shapes that fail silently upstream.
+
+        `isAllDate: 1` **overrides** `startDate`/`endDate` — sending both is
+        accepted and quietly ignores the range (measured: identical totals
+        with and without the dates). And an inverted range is accepted too,
+        returning a nonsense subset rather than erroring.
+        """
+        f = self.filters or {}
+        start, end = f.get("startDate"), f.get("endDate")
+        if f.get("isAllDate") and (start or end):
+            raise ValueError(
+                "filters.isAllDate overrides startDate/endDate upstream — sending both silently ignores "
+                "the date range. Drop isAllDate to use the range, or drop the range to scan all dates."
+            )
+        if isinstance(start, str) and isinstance(end, str) and start > end:
+            raise ValueError(
+                f"filters.startDate ({start}) is after endDate ({end}). The upstream accepts this and "
+                "returns a nonsense subset instead of erroring, so it is refused here."
+            )
+        return self
 
     @model_validator(mode="after")
     def _compile_app_id(self) -> "JobCreate":
