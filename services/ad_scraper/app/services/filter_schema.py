@@ -187,10 +187,12 @@ def build(session: Session) -> Dict[str, Any]:
             {
                 "key": "purpose",
                 "type": "int",
-                "required": True,
+                "required": False,
+                "default": settings.AD_DEFAULT_PURPOSE,
                 "options": PURPOSE_OPTIONS,
                 "notes": [
-                    "The only required filter key.",
+                    "Required by the upstream, but this service fills in the default above when "
+                    "you omit it — a form does not need a control for it.",
                     "Not nested: the same TikTok/TR filter answers 1.43M / 1.95M / 1.67M for 1 / 2 / 3, "
                     "so a higher number is not a wider net.",
                 ],
