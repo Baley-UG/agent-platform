@@ -90,9 +90,9 @@ Update this table at the end of each session.
 
 | ID | Title | Status | Commit |
 | - | - | - | - |
-| AD-M1 | Foundations — schema, client, credentials, API | ✅ done | _pending commit_ |
-| AD-M2 | Ingestion — job queue, worker, persistence, mirror, read API | ✅ done | _pending commit_ |
-| AD-M3 | Integration — gateway, compose, content_pipeline bridge, docs | ✅ done | _pending commit_ |
+| AD-M1 | Foundations — schema, client, credentials, API | ✅ done | f677ef1 |
+| AD-M2 | Ingestion — job queue, worker, persistence, mirror, read API | ✅ done | f677ef1 |
+| AD-M3 | Integration — gateway, compose, content_pipeline bridge, docs | ✅ done | f677ef1 |
 | AD-M4 | Automatic login | ❌ dropped by decision — token-only auth instead | — |
 
 Status legend: ⏳ not started · 🔄 in progress · ✅ done · 🚧 blocked · ❌ dropped.
