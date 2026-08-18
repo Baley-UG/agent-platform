@@ -204,7 +204,9 @@ class TestPaginate:
 
         async def fake_post(url, **kwargs):
             seen_pages.append(kwargs["json"]["variables"]["page"])
-            return _FakeResponse(_ok_payload(rows=2))
+            # `total` has to justify the window: 50 rows/page x page 4 = 200,
+            # so a total below 200 would (correctly) stop the walk early.
+            return _FakeResponse(_ok_payload(rows=50, total=5_000))
 
         monkeypatch.setattr(client._http, "post", fake_post)
         pages = [page async for page, _ in client.paginate_materials({}, page_from=2, page_to=4)]
@@ -223,6 +225,71 @@ class TestPaginate:
         monkeypatch.setattr(client._http, "post", fake_post)
         pages = [page async for page, _ in client.paginate_materials({}, page_from=1, page_to=10)]
         assert pages == [1, 2], "should stop after the empty page, not walk to 10"
+        await client.aclose()
+
+    async def test_stops_when_total_is_reached(self, monkeypatch):
+        """Past the end the API REPEATS the last page instead of returning
+        empty — measured: a filter with total=26 answers pages 1, 2 and 3 with
+        the identical 26 rows. Without a `total` bound, page_to=200 would
+        spend 200 requests fetching the same 26 creatives 200 times.
+        """
+        client = _client()
+        monkeypatch.setattr(settings, "AD_API_PAGE_DELAY_SECONDS", 0)
+        requested = []
+
+        async def fake_post(url, **kwargs):
+            requested.append(kwargs["json"]["variables"]["page"])
+            return _FakeResponse(_ok_payload(rows=26, total=26))
+
+        monkeypatch.setattr(client._http, "post", fake_post)
+        pages = [page async for page, _ in client.paginate_materials({}, page_from=1, page_to=200)]
+        assert pages == [1], "one page covers total=26; the rest would be repeats"
+        assert requested == [1], "must not spend 199 wasted requests"
+        await client.aclose()
+
+    async def test_walks_every_page_a_large_total_justifies(self, monkeypatch):
+        client = _client()
+        monkeypatch.setattr(settings, "AD_API_PAGE_DELAY_SECONDS", 0)
+
+        async def fake_post(*args, **kwargs):
+            return _FakeResponse(_ok_payload(rows=50, total=10_000))
+
+        monkeypatch.setattr(client._http, "post", fake_post)
+        pages = [page async for page, _ in client.paginate_materials({}, page_from=1, page_to=4)]
+        assert pages == [1, 2, 3, 4]
+        await client.aclose()
+
+    async def test_total_bound_uses_the_payload_limit(self, monkeypatch):
+        """`limit` is server-fixed, but trust the payload so a server-side
+        change cannot silently break the bound.
+        """
+        client = _client()
+        monkeypatch.setattr(settings, "AD_API_PAGE_DELAY_SECONDS", 0)
+
+        async def fake_post(*args, **kwargs):
+            payload = _ok_payload(rows=10, total=20)
+            payload["data"]["materialList"]["limit"] = 10
+            return _FakeResponse(payload)
+
+        monkeypatch.setattr(client._http, "post", fake_post)
+        pages = [page async for page, _ in client.paginate_materials({}, page_from=1, page_to=10)]
+        assert pages == [1, 2], "20 rows / limit 10 = 2 pages"
+        await client.aclose()
+
+    async def test_missing_total_falls_back_to_the_empty_page_stop(self, monkeypatch):
+        client = _client()
+        monkeypatch.setattr(settings, "AD_API_PAGE_DELAY_SECONDS", 0)
+        responses = [
+            _FakeResponse({"data": {"materialList": {"page": 1, "limit": 50, "data": [{"material": {"id": "a"}}]}}}),
+            _FakeResponse({"data": {"materialList": {"page": 2, "limit": 50, "data": []}}}),
+        ]
+
+        async def fake_post(*args, **kwargs):
+            return responses.pop(0)
+
+        monkeypatch.setattr(client._http, "post", fake_post)
+        pages = [page async for page, _ in client.paginate_materials({}, page_from=1, page_to=10)]
+        assert pages == [1, 2]
         await client.aclose()
 
     async def test_rejects_a_window_past_the_ceiling_before_requesting(self, monkeypatch):

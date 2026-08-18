@@ -50,6 +50,10 @@ class IngestStats:
     materials_new: int = 0
     materials_updated: int = 0
     materials_skipped: int = 0
+    # Rows the API handed us again within the same job. Past the end of a
+    # result set it repeats the last page rather than returning empty, so
+    # without counting these separately `materials_seen` would double-count.
+    materials_repeated: int = 0
     # Fan-out volume: one creative can carry 66 advertisers and dozens of
     # facet edges, so row counts alone understate what a job wrote.
     advertiser_edges: int = 0
@@ -72,6 +76,7 @@ class IngestStats:
             "materials_new": self.materials_new,
             "materials_updated": self.materials_updated,
             "materials_skipped": self.materials_skipped,
+            "materials_repeated": self.materials_repeated,
             "advertiser_edges": self.advertiser_edges,
             "dimension_edges": self.dimension_edges,
             "mirrored": self.mirrored,
@@ -124,9 +129,16 @@ async def _persist_page(
     job_id: uuid.UUID,
     job_mirror: Optional[bool],
     stats: IngestStats,
-) -> None:
-    """Upsert every material on one page, then mirror its media."""
+    seen_ids: set[str],
+) -> int:
+    """Upsert every material on one page, then mirror its media.
+
+    Returns the count of ids not seen earlier in this job. Zero means the
+    page was entirely a repeat, which is how the API signals "past the end"
+    — it re-serves the last page instead of an empty one.
+    """
     do_mirror = mirror.should_mirror(job_mirror=job_mirror)
+    fresh = 0
 
     for row in rows:
         if not isinstance(row, dict):
@@ -137,6 +149,14 @@ async def _persist_page(
             stats.materials_skipped += 1
             continue
 
+        material_id_raw = str(material["id"])
+        if material_id_raw in seen_ids:
+            # Same job already handled it — re-upserting would just repeat the
+            # write and re-check the mirror for no gain.
+            stats.materials_repeated += 1
+            continue
+        seen_ids.add(material_id_raw)
+        fresh += 1
         stats.materials_seen += 1
 
         # Own transaction per material — a bad payload costs one row.
@@ -201,6 +221,8 @@ async def _persist_page(
         else:
             stats.mirror_failed += 1
 
+    return fresh
+
 
 async def run_job(
     *,
@@ -218,6 +240,9 @@ async def run_job(
     `BadFilter` — none of which another attempt can fix.
     """
     stats = IngestStats()
+    # Distinct ids across the whole job, so a repeated page neither inflates
+    # the counters nor re-does work.
+    seen_ids: set[str] = set()
 
     async with YouCloudClient(session_provider=_session_provider) as client:
         async for page, payload in client.paginate_materials(
@@ -234,15 +259,22 @@ async def run_job(
                 logger.info("ad_page_empty", job_id=str(job_id), page=page)
                 break
 
-            await _persist_page(rows, job_id=job_id, job_mirror=job_mirror, stats=stats)
+            fresh = await _persist_page(rows, job_id=job_id, job_mirror=job_mirror, stats=stats, seen_ids=seen_ids)
             logger.info(
                 "ad_page_ingested",
                 job_id=str(job_id),
                 page=page,
+                fresh=fresh,
                 seen=stats.materials_seen,
                 new=stats.materials_new,
                 updated=stats.materials_updated,
             )
+            if fresh == 0:
+                # Every row was one we already had this run. The client's
+                # `total` bound normally stops us first; this is the backstop
+                # for a drifting `total` on a live feed.
+                logger.info("ad_page_all_repeats", job_id=str(job_id), page=page)
+                break
 
     # A page that returned rows proves the cookie works; record that so an
     # expiring-but-valid session doesn't look stale on the dashboard.
