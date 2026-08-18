@@ -45,19 +45,20 @@ PURPOSE_OPTIONS: List[Dict[str, Any]] = [
     {
         "code": 1,
         "name": "App advertisers",
-        "note": "Zero Playlet advertisers across 550 sampled rows; in-app network inventory "
-        "(Unity/AdMob/Mintegral, mostly Rewarded). Use this for competitor app creatives.",
+        "note": "In-app network inventory. AdColony reports 8 732 rows here against 48 under "
+        "purpose 3; Unity Ads peaks here too. Use this for competitor app creatives.",
     },
     {
         "code": 2,
-        "name": "Apps + websites",
-        "note": "Mixed. Skews to Google Ads/Interstitial.",
+        "name": "Broader mix",
+        "note": "Between the two. Still app-advertiser dominant, but admits far more display "
+        "inventory than 1 — AdSense goes from 1 007 rows to 27 744.",
     },
     {
         "code": 3,
-        "name": "Websites + short drama",
-        "note": "Website-heaviest, and where Playlet advertisers concentrate. The Meta family "
-        "is ~20x denser here than under purpose 1.",
+        "name": "Web, social and display",
+        "note": "Web and social networks peak here — AdSense 28 342, X 304 137 — and in-app "
+        "networks fall away. The Meta family is ~20x denser than under purpose 1.",
     },
 ]
 

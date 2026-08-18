@@ -389,18 +389,34 @@ despite appearing in every example copied out of the web UI's network tab.
 
 `purpose` selects the corpus and only **1, 2, 3** are valid (4+ is a parameter
 error). They are **not nested** — the same TikTok/TR filter answers 1 430 403 /
-1 954 500 / 1 665 581 for 1 / 2 / 3, so 3 is smaller than 2. What separates
-them is the advertiser type: **`purpose: 1` is the app-advertiser corpus** (635
-AppBrand vs 144 Website and **zero Playlet** across 550 sampled rows, with
-in-app network inventory — Unity/AdMob/Mintegral, mostly Rewarded), while 2 and
-3 mix in websites and short-drama (Playlet) advertisers and skew to Google
-Ads/Interstitial. Label the dropdown accordingly:
+1 954 500 / 1 665 581 for 1 / 2 / 3 — and page 1 of a fixed filter returns
+near-disjoint ids across them, so they are different pools rather than one
+pool reordered.
+
+`purpose` runs as a **gradient from in-app inventory to web/display
+inventory**. Measured by the corpus size the upstream reports per network
+(a server-side count, not a sample):
+
+| Network | purpose 1 | purpose 2 | purpose 3 |
+| - | - | - | - |
+| Unity Ads (in-app) | **2 747 539** | 2 434 788 | 2 035 918 |
+| AdColony (in-app) | **8 732** | 5 808 | 48 |
+| AdSense (web display) | 1 007 | 27 744 | **28 342** |
+| X (social/web) | 19 299 | 157 688 | **304 137** |
+
+Label the dropdown for that gradient:
 
 | Value | Offer it as |
 | - | - |
-| 1 | App advertisers — in-app ad networks |
-| 2 | Mixed: apps + websites |
-| 3 | Websites + short drama (Playlet) |
+| 1 | App advertisers — in-app networks |
+| 2 | Broader mix — in-app plus display |
+| 3 | Web, social and display |
+
+Advertiser mix agrees (95% / 91% AppBrand under 1 and 2, flipping to 62%
+Website under 3) but those are counted from the newest 400 rows of a live
+feed and they move: an earlier sample of the same corpora gave 18% / 42% /
+57%. Trust the direction, not the magnitude — and prefer a filter's reported
+`total` over anything counted off a page.
 
 Network density still shifts with purpose even though `media` code *validity*
 does not: `media: [32]` (Threads) is valid under all three and answers 5.7M /

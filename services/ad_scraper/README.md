@@ -139,50 +139,51 @@ network, filter to it alone.
 fail with "Parameter error". The upstream never says what they mean, so this
 is measured.
 
-**They are not nested subsets.** Same narrow filter (TikTok, TR, all dates)
-across the three:
+**They are not nested.** Same narrow filter (TikTok, TR, all dates) answers
+1 430 403 / 1 954 500 / 1 665 581 for 1 / 2 / 3 — three is smaller than two,
+so a higher number is not a wider net. Page 1 of a fixed filter under each
+purpose returns near-disjoint id sets (1 shared row out of ~50), so these are
+genuinely different creative pools, not one pool reordered.
 
-| purpose | total |
-| - | - |
-| 1 | 1 430 403 |
-| 2 | 1 954 500 |
-| 3 | 1 665 581 |
+**`purpose` is a gradient from in-app inventory toward web/display
+inventory.** The evidence is the corpus size the upstream reports per
+network, which is a server-side count over the whole pool rather than a
+sample of it:
 
-3 is smaller than 2, so there is no "1 ⊂ 2 ⊂ 3" ordering to rely on. The
-corpora overlap heavily and differ in composition, not just in size.
+| Network | purpose 1 | purpose 2 | purpose 3 |
+| - | - | - | - |
+| Unity Ads (in-app, games) | **2 747 539** | 2 434 788 | 2 035 918 |
+| AdColony (in-app) | **8 732** | 5 808 | 48 |
+| AdSense (web display) | 1 007 | 27 744 | **28 342** |
+| X (social/web) | 19 299 | 157 688 | **304 137** |
+| TikTok (mixed) | 1 829 634 | 4 244 227 | **6 042 953** |
 
-**What actually separates them is the advertiser type.** Counting
-`campaign[].__typename` over sampled rows of each corpus:
+In-app networks peak at 1 and fall away toward 3 — AdColony by 180x. Web and
+social networks do the exact opposite, AdSense rising 28x from 1 to 3. The
+gradient runs in both directions on the same axis, which is what makes it a
+real property of `purpose` rather than a size artefact.
 
-| purpose | AppBrand | Website | Playlet | Sampled |
-| - | - | - | - | - |
-| 1 | 635 | 144 | **0** | 550 rows |
-| 2 | 176 | 128 | 2 | 150 rows |
-| 3 | 142 | 193 | 8 | 150 rows |
+Advertiser mix points the same way. Sampling 400 rows of each corpus,
+`campaign[].__typename` is 95% AppBrand under 1, 91% under 2, and flips to
+62% Website under 3.
 
-Zero Playlet advertisers under `purpose: 1` across 550 rows, and the Website
-share climbs steadily 1 → 2 → 3. The media and format mix follows: an
-unfiltered page of `purpose: 1` came back Unity Ads 37 / AdMob 25 / YouTube 22
-with Rewarded 40 — in-app ad-network inventory — while 2 and 3 were
-Google Ads 48-49 of 50 with Interstitial dominant.
+### Be careful with the sample-based numbers
 
-So, practically:
+Those percentages are the **newest** 400 creatives (`max_dt_desc`) on a live
+feed, and they move. An earlier sample of the same three corpora put the
+Website share at 18% / 42% / 57% instead of 4.6% / 8.6% / 61.8%. Only the
+ordering survived both runs — Website share rises 1 → 2 → 3 every time, but
+the magnitudes are not stable enough to quote as facts.
 
-| Use | purpose |
-| - | - |
-| Competitor **app** creatives (user acquisition, in-app networks) | **1** |
-| Mixed app + web | 2 |
-| Web / landing-page / short-drama (Playlet) advertisers | 3 |
+The same caveat killed an earlier claim of ours: that Playlet advertisers
+concentrate under `purpose: 3`. One sample showed 8 of them there and none
+under 1; a larger, equal-depth sample found **zero Playlet under all three**.
+Playlet is simply rare among recent creatives, and the first result was
+noise. Do not build a filter or a UI affordance on it.
 
-Density per network still shifts with purpose even though the *validity* of a
-`media` code does not. `media: [32]` (Threads) is accepted under all three and
-answers 5.7M / 60.4M / 111.9M rows — the Meta family is roughly 20x denser
-under 3 than under 1, which is why an unfiltered sample of 3 still looks
-Google-heavy: Google simply dominates the whole corpus.
-
-Sampling caveat: these are the most recent creatives (`max_dt_desc`), so the
-mix is today's mix, not an all-time census. The zero-Playlet result under
-`purpose: 1` is the one that looks structural rather than incidental.
+Prefer the `total` a filter reports over anything counted from a page. Totals
+are the upstream's own count across the whole corpus; a page is a recency
+window that changes under you.
 
 ## The pagination ceiling — read this before writing a filter
 
