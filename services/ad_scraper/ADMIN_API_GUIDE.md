@@ -306,8 +306,23 @@ upstream. Everything else, `field` and `accurateSearch` included, is optional
 despite appearing in every example copied out of the web UI's network tab.
 
 `purpose` selects the corpus and only **1, 2, 3** are valid (4+ is a parameter
-error). The Meta family is densest under 3; 2 carries the AdMob/YouTube/Unity
-side; TikTok answers under both.
+error). They are **not nested** — the same TikTok/TR filter answers 1 430 403 /
+1 954 500 / 1 665 581 for 1 / 2 / 3, so 3 is smaller than 2. What separates
+them is the advertiser type: **`purpose: 1` is the app-advertiser corpus** (635
+AppBrand vs 144 Website and **zero Playlet** across 550 sampled rows, with
+in-app network inventory — Unity/AdMob/Mintegral, mostly Rewarded), while 2 and
+3 mix in websites and short-drama (Playlet) advertisers and skew to Google
+Ads/Interstitial. Label the dropdown accordingly:
+
+| Value | Offer it as |
+| - | - |
+| 1 | App advertisers — in-app ad networks |
+| 2 | Mixed: apps + websites |
+| 3 | Websites + short drama (Playlet) |
+
+Network density still shifts with purpose even though `media` code *validity*
+does not: `media: [32]` (Threads) is valid under all three and answers 5.7M /
+60.4M / 111.9M, so the Meta family is ~20x denser under 3.
 
 **Strict fields — one bad value fails the WHOLE request.** The upstream never
 ignores a bad code; it answers *"Parameter error, please clear the filter and

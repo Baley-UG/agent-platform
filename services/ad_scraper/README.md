@@ -75,10 +75,56 @@ Valid `media` codes are 1-19, 21-23, 25-26, 28-31, 33-34. An invalid code
 does **not** get ignored — it fails the whole request with
 `"Parameter error, please clear the filter and refresh"`.
 
-`purpose` selects the corpus and 1, 2, 3 are the only valid values (4+ is a
-parameter error). The Meta family (Facebook / Instagram / Messenger /
-Threads) shows up under `purpose: 3`; `purpose: 2` carries the
-AdMob/YouTube/Unity side. TikTok answers under both.
+## What the three `purpose` values actually are
+
+`purpose` is a required `Int!` and only 1, 2 and 3 are accepted — 4 and up
+fail with "Parameter error". The upstream never says what they mean, so this
+is measured.
+
+**They are not nested subsets.** Same narrow filter (TikTok, TR, all dates)
+across the three:
+
+| purpose | total |
+| - | - |
+| 1 | 1 430 403 |
+| 2 | 1 954 500 |
+| 3 | 1 665 581 |
+
+3 is smaller than 2, so there is no "1 ⊂ 2 ⊂ 3" ordering to rely on. The
+corpora overlap heavily and differ in composition, not just in size.
+
+**What actually separates them is the advertiser type.** Counting
+`campaign[].__typename` over sampled rows of each corpus:
+
+| purpose | AppBrand | Website | Playlet | Sampled |
+| - | - | - | - | - |
+| 1 | 635 | 144 | **0** | 550 rows |
+| 2 | 176 | 128 | 2 | 150 rows |
+| 3 | 142 | 193 | 8 | 150 rows |
+
+Zero Playlet advertisers under `purpose: 1` across 550 rows, and the Website
+share climbs steadily 1 → 2 → 3. The media and format mix follows: an
+unfiltered page of `purpose: 1` came back Unity Ads 37 / AdMob 25 / YouTube 22
+with Rewarded 40 — in-app ad-network inventory — while 2 and 3 were
+Google Ads 48-49 of 50 with Interstitial dominant.
+
+So, practically:
+
+| Use | purpose |
+| - | - |
+| Competitor **app** creatives (user acquisition, in-app networks) | **1** |
+| Mixed app + web | 2 |
+| Web / landing-page / short-drama (Playlet) advertisers | 3 |
+
+Density per network still shifts with purpose even though the *validity* of a
+`media` code does not. `media: [32]` (Threads) is accepted under all three and
+answers 5.7M / 60.4M / 111.9M rows — the Meta family is roughly 20x denser
+under 3 than under 1, which is why an unfiltered sample of 3 still looks
+Google-heavy: Google simply dominates the whole corpus.
+
+Sampling caveat: these are the most recent creatives (`max_dt_desc`), so the
+mix is today's mix, not an all-time census. The zero-Playlet result under
+`purpose: 1` is the one that looks structural rather than incidental.
 
 ## The pagination ceiling — read this before writing a filter
 
@@ -112,6 +158,26 @@ Also worth knowing: the feed is live and `order=max_dt_desc` re-sorts
 between requests, so rows shift across pages of a large result set.
 Materials are deduped by id, so this is harmless — but page count is not a
 row count. A date-bounded filter is more reproducible.
+
+## "It fetched one page even though I asked for 30"
+
+Three things stop a walk early, and two of them are correct:
+
+1. **`total` is smaller than one page.** `stats.total_reported` is the
+   upstream's own row count for your filter. If it is 26, one page of 50
+   holds everything and stopping is right — past the end the API *repeats
+   the last page* rather than returning empty, so continuing would fetch the
+   same 26 rows another 29 times and report `materials_seen: 1500`. Check
+   `total_reported` first; it answers this question by itself.
+2. **An empty page.** Recorded as `ad_page_empty` in the log.
+3. **Every row on a page was one this same job already stored**
+   (`ad_page_all_repeats`) — a backstop for a `total` that drifts on a live
+   feed.
+
+Deep pagination itself works. Measured: `page_to: 30` on a filter reporting
+733 868 rows walked all 30 pages, 1 500 materials, 110 369 facet edges,
+6.62s of that spent held at the rate gate. If you see one page against a
+large `total_reported`, that is a bug — quote the job id.
 
 ## Setup
 
