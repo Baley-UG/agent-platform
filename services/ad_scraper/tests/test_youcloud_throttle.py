@@ -288,3 +288,35 @@ class TestClientIntegration:
         assert gate.penalties == 0
         assert gate.interval == pytest.approx(2.0)
         await client.aclose()
+
+
+class TestWorkerMetricsExporter:
+    """The worker owns the counters this change added, and the API's
+    /metrics only ever reports its own process. An unscraped counter is
+    indistinguishable from a broken one."""
+
+    def test_disabled_by_a_zero_port(self, monkeypatch):
+        from app.core.metrics import start_worker_metrics_server
+
+        monkeypatch.setattr(settings, "AD_WORKER_METRICS_PORT", 0)
+        assert start_worker_metrics_server() is False
+
+    def test_a_port_clash_degrades_to_no_metrics_not_no_ingestion(self, monkeypatch):
+        """Two workers on one host, or `replicas: 2`, must still ingest."""
+        import app.core.metrics as metrics
+
+        def boom(_port):
+            raise OSError("address already in use")
+
+        monkeypatch.setattr(settings, "AD_WORKER_METRICS_PORT", 9103)
+        monkeypatch.setattr(metrics, "start_http_server", boom)
+        assert metrics.start_worker_metrics_server() is False
+
+    def test_listens_when_the_port_is_free(self, monkeypatch):
+        import app.core.metrics as metrics
+
+        bound = []
+        monkeypatch.setattr(settings, "AD_WORKER_METRICS_PORT", 9103)
+        monkeypatch.setattr(metrics, "start_http_server", lambda p: bound.append(p))
+        assert metrics.start_worker_metrics_server() is True
+        assert bound == [9103]

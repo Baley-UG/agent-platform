@@ -174,6 +174,12 @@ class Settings(BaseSettings):
 
     # ----- Worker -----
     AD_WORKER_CONCURRENCY: int = Field(default=2)
+    # The worker does all the ingestion, so every counter that matters
+    # (pages fetched, rate limits, throttle waits, mirror bytes) lives in
+    # ITS process — and the API's /metrics only ever reports its own. Without
+    # an exporter here those counters read 0 forever, which is worse than
+    # having no metric at all. 0 disables it.
+    AD_WORKER_METRICS_PORT: int = Field(default=9103)
     AD_WORKER_POLL_SECONDS: float = Field(default=3.0)
     # A job whose worker died mid-process stays stuck in `status='running'`
     # (the worker only claims `queued`). Requeued by the API's

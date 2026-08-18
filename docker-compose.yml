@@ -383,6 +383,11 @@ services:
       args:
         APP_ENV: ${APP_ENV:-development}
     command: ["python", "-m", "app.worker"]
+    # The worker owns the counters that matter (pages fetched, rate limits,
+    # throttle waits, mirror bytes) — the API's /metrics only reports its
+    # own process, so Prometheus has to scrape this one too.
+    expose:
+      - "9103"
     env_file:
       - .env
     environment:
