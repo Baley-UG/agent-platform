@@ -179,6 +179,38 @@ therefore be multi-select per facet, and the facets AND together.
 
 An unknown `sort` is a 400, not a silent fallback.
 
+**Every row carries its networks.** Each item includes the facets a table
+needs, so you never have to fetch the detail endpoint to label a row:
+
+```json
+{
+  "id": "06430b497bf06356cc7bcc81414cbbc0",
+  "type": 202,
+  "impression_inc_2y_raw": ">10M",
+  "media":    [{"code": "13", "name": "TikTok"}],
+  "platform": [{"code": "1", "name": "Android"}, {"code": "2", "name": "iOS"}],
+  "channel":  [{"code": "1407", "name": "TikTok Ads"}],
+  "format":   [{"code": "106", "name": "In-Feed"}],
+  "advertisers": [{"id": "uctQ...", "name": "hiyahealth.com", "kind": "Website"}],
+  "advertiser_count": 1
+}
+```
+
+Two traps worth naming:
+
+* **`media_format` is not the network.** It is the file container (`mp4`,
+  `jpeg`). The network lives in `media[]` — that is the TikTok/Facebook
+  column. Same for `media_width` / `media_duration_sec`: all of those
+  describe the file, not the placement.
+* **`area` is NOT in the list response.** Measured over 1 923 materials it
+  averages 56.1 country edges and peaks at 136, so a 50-row page would carry
+  ~2 800 entries for a column no table can show. Countries are on
+  `GET /materials/{id}`. You can still *filter* by `area` in the list.
+
+`advertisers` is capped at 5 per row with `advertiser_count` giving the true
+total — one creative in our data carries 60 — so render "3X Skin Tool Emotes
++ 55 more" rather than assuming the array is complete.
+
 Returns a flat array (no envelope, no total). Paginate with `limit`/`offset`;
 there is no count endpoint — ask for `limit+1` if you need a "next page"
 affordance.

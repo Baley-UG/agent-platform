@@ -63,6 +63,95 @@ def _facet_joins(facets: Sequence[Tuple[str, Sequence[str]]]) -> Tuple[str, Dict
     return "".join(clauses), params
 
 
+# Facets attached to every row of a LIST response. `area` is deliberately
+# absent: measured over 1 923 materials it averages 56.1 edges and peaks at
+# 136, so putting it on 50 rows would mean ~2 800 entries in one payload for
+# a column no table can render anyway. The four kept here average 9.1 edges
+# per material combined. Full facets, `area` included, live on
+# `GET /materials/{id}`.
+_LIST_FACET_KINDS = ("media", "platform", "channel", "format")
+
+# One creative can carry up to 60 advertisers (measured max; the upstream
+# docs claim 66). A table shows a handful and a count, so cap the list and
+# report the true total rather than silently truncating.
+_LIST_ADVERTISER_CAP = 5
+
+
+def _attach_list_facets(session: Session, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Add network/platform facets and advertisers to list rows.
+
+    Two extra queries for the whole page, not per row — the point is that a
+    list response without these is unusable for a table: `media_format` is
+    the file container (`mp4`), so nothing in the bare row says whether the
+    creative ran on TikTok or Facebook.
+    """
+    if not rows:
+        return rows
+
+    ids = [row["id"] for row in rows]
+    buckets: Dict[str, Dict[str, List[Dict[str, Any]]]] = {
+        material_id: {kind: [] for kind in _LIST_FACET_KINDS} for material_id in ids
+    }
+
+    facet_rows = (
+        session.execute(
+            sql_text("""
+                SELECT md.material_id, md.kind, md.code, d.name
+                  FROM ad_material_dimensions md
+                  LEFT JOIN ad_dimensions d ON d.kind = md.kind AND d.code = md.code
+                 WHERE md.material_id = ANY(:ids) AND md.kind = ANY(:kinds)
+                 ORDER BY md.kind, d.name NULLS LAST, md.code
+                """),
+            {"ids": ids, "kinds": list(_LIST_FACET_KINDS)},
+        )
+        .mappings()
+        .all()
+    )
+    for facet in facet_rows:
+        bucket = buckets.get(facet["material_id"])
+        if bucket is not None:
+            bucket[facet["kind"]].append({"code": facet["code"], "name": facet["name"]})
+
+    advertisers: Dict[str, List[Dict[str, Any]]] = {material_id: [] for material_id in ids}
+    totals: Dict[str, int] = {material_id: 0 for material_id in ids}
+    adv_rows = (
+        session.execute(
+            sql_text("""
+                SELECT material_id, advertiser_id, name, kind, total
+                  FROM (
+                        SELECT ma.material_id,
+                               ma.advertiser_id,
+                               a.name,
+                               a.kind,
+                               ROW_NUMBER() OVER (PARTITION BY ma.material_id
+                                                  ORDER BY a.name NULLS LAST, ma.advertiser_id) AS rn,
+                               COUNT(*) OVER (PARTITION BY ma.material_id) AS total
+                          FROM ad_material_advertisers ma
+                          LEFT JOIN ad_advertisers a ON a.id = ma.advertiser_id
+                         WHERE ma.material_id = ANY(:ids)
+                       ) ranked
+                 WHERE rn <= :cap
+                 ORDER BY material_id, rn
+                """),
+            {"ids": ids, "cap": _LIST_ADVERTISER_CAP},
+        )
+        .mappings()
+        .all()
+    )
+    for adv in adv_rows:
+        material_id = adv["material_id"]
+        if material_id in advertisers:
+            advertisers[material_id].append({"id": adv["advertiser_id"], "name": adv["name"], "kind": adv["kind"]})
+            totals[material_id] = adv["total"]
+
+    for row in rows:
+        material_id = row["id"]
+        row.update(buckets[material_id])
+        row["advertisers"] = advertisers[material_id]
+        row["advertiser_count"] = totals[material_id]
+    return rows
+
+
 def search_materials(
     session: Session,
     *,
@@ -130,7 +219,7 @@ def search_materials(
          LIMIT :limit OFFSET :offset
         """)
     rows = session.execute(statement, params).mappings().all()
-    return [dict(row) for row in rows]
+    return _attach_list_facets(session, [dict(row) for row in rows])
 
 
 def get_material(session: Session, material_id: str) -> Optional[Dict[str, Any]]:
