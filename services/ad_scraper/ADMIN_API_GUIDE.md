@@ -356,6 +356,19 @@ Network density still shifts with purpose even though `media` code *validity*
 does not: `media: [32]` (Threads) is valid under all three and answers 5.7M /
 60.4M / 111.9M, so the Meta family is ~20x denser under 3.
 
+**Two `media` behaviours that generate bug reports.**
+
+* A row lists its creative's **whole** network set, not the intersection with
+  your filter. Filter `media: [13]` and the rows come back TikTok — and also
+  Pangle, Instagram, Facebook, because one creative runs on several networks.
+  If the table filters by TikTok and then renders `media[]`, it will look
+  broken. Consider highlighting the networks the user selected.
+* A small network **disappears inside a big filter**. `media:
+  [4,11,21,2,1,10,16,32]` reports 194 178 669 rows; adding TikTok (13) makes
+  it 198 422 085 — 2.1% — and page 1 under `max_dt_desc` had zero TikTok
+  rows. To surface one network, filter to it alone. `media: [13]` on its own
+  returns 4 244 227 rows and a full page of TikTok.
+
 **Strict fields — one bad value fails the WHOLE request.** The upstream never
 ignores a bad code; it answers *"Parameter error, please clear the filter and
 refresh"* with no indication which field was wrong. `POST /jobs` therefore
