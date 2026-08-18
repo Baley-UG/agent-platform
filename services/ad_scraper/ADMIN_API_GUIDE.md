@@ -66,12 +66,33 @@ sees it. Around each material:
 | - | - |
 | **resources** | The creative's file(s). Usually one; a carousel has several |
 | **advertisers** | Every app / brand / site / drama running this creative. One creative can carry **66** of them — ad networks resell the same trailer |
-| **dimensions** (facets) | `media`, `channel`, `area`, `platform`, `format`, `resource_element` — flattened into one `(kind, code)` vocabulary |
+| **dimensions** (facets) | six vocabularies flattened into one `(kind, code)` table — see the table below, and note that `platform` is the OS, not the social network |
 | **jobs** | One ingestion run: a filter set + a page window |
 
 The media is **mirrored into our own S3** at ingestion time, because
 YouCloud's CDN URLs are signed and stop resolving ~15 days out. That is why
 the panel should always prefer `media-url` (§ 5) over `media_url`.
+
+### Which facet is "the platform"?
+
+| Facet | What it actually means | Example values |
+| - | - | - |
+| **`media`** | **the social network / ad network** — this is the one you want for "show me TikTok ads" | Instagram(1) · Facebook(2) · X(3) · TikTok(13) · Messenger(16) · Pinterest(17) · Snapchat(25) · YouTube(11) · Threads(32) · AdMob(4) · AppLovin(8) · Unity Ads(5) · Kwai(28) · Yandex(30) · VKontakte(31) |
+| `platform` | the **operating system** | iOS(2) · Android(1) |
+| `channel` | the ad-buying platform | Meta Ads(1101) · Google Ads(1103) |
+| `format` | the ad slot | In-Feed(106) · Native(105) · Banner(102) · Interstitial(103) |
+| `area` | country | `TR` · `US` · `DE` … |
+| `resource_element` | creative element tags | Phone · Person … |
+
+**`platform` does NOT mean the social network.** It is the OS. Filtering by
+TikTok/Facebook/Instagram is the **`media`** facet. This naming comes from
+the upstream API and is easy to get backwards — a `platform=1` filter reads
+like "Android", not like "Facebook".
+
+For a UI this matters: the "platform" chip a user expects (TikTok, Facebook,
+Instagram) is the **`media`** facet. Label it "Network" or "Platform" in the
+UI if you like, but wire it to `media`. Reserve a separate "OS" filter for
+`platform` if you surface it at all.
 
 ---
 
@@ -304,6 +325,11 @@ means the filter matched more than the page window could return — the job
 succeeded but did not ingest everything. `notes[0]` is written for an
 operator to read; render it verbatim. Either raise `page_to`, or partition
 the filter (date window, country, media) across several jobs.
+
+`materials_repeated` counts rows the API re-served within the job: past the
+end of a result set it repeats the last page instead of returning empty, so
+a `page_to` far above what the filter justifies is harmless but visible.
+`materials_seen` counts distinct creatives only.
 
 `mirror_cached` counts creatives already in our bucket, skipped without a
 download. On a re-run of the same filter expect

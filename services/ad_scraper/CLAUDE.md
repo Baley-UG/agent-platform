@@ -64,6 +64,10 @@ No scheduler. No Redis. No Celery. No separate database.
   counts those as `stats.mirror_cached`. Re-running a filter is the normal
   way to catch new creatives; without this it re-fetched every video it
   already held.
+- **Pagination is bounded by `total`, not by `page_to`.** The API never
+  returns an empty page — past the end it re-serves the last one — so an
+  empty-page stop condition alone would let `page_to=200` burn 200 requests
+  on a 26-row filter. `page_to` is an upper bound.
 - **Per-material transactions.** Each material upserts in its own
   `session_scope` so one malformed payload can't roll back its siblings.
 - **`raw` JSONB holds the full payload** so a mapping fix is a backfill, not
@@ -123,6 +127,7 @@ Established by probing the live endpoint. Don't re-derive these.
 | Introspection | Disabled (`__schema` → GRAPHQL_VALIDATION_FAILED) |
 | Auth surface | One cookie, `sessionId` (a JWT with an `exp` claim) |
 | `total` | Drifts between calls — the feed is live; rows shift across pages |
+| Past-the-end paging | The API **repeats the last page forever** rather than returning an empty one. Verified: `total: 26` serves pages 1/2/3 identically. `paginate_materials` therefore stops at `page × limit >= total`, and `ingest` dedupes ids per job (`stats.materials_repeated`) as a backstop for a drifting `total` |
 | Session codes | `05:400001` malformed token · `05:403001` expired session |
 | Plan/anon code | `00:403001` "Permission denied, please upgrade your plan" |
 | CDN signature | `auth_key` IS enforced — tampering it gives 401 |
@@ -130,6 +135,10 @@ Established by probing the live endpoint. Don't re-derive these.
 | App-id filter | `searchDsl: [{"key":"appid","value":"<store id>","type":"equal"}]` — 6 559 rows for 1661308505. This is the web UI's `advanced` panel |
 | `campaign` trap | `campaign: "1661308505"` returns **0 rows, HTTP 200, no error**. It takes the opaque entity id, not a store id. `JobCreate` rejects a numeric `campaign` with a 422 for exactly this reason |
 | Sort values | `max_dt_desc` (default) and `impression_inc_2y_desc` both confirmed |
+| Facet naming trap | **`media` is the social network** (TikTok=13, Instagram=1, Facebook=2, X=3, Pinterest=17, Snapchat=25, …); `platform` is the **OS** (iOS=2, Android=1); `channel` is the ad-buying platform (Meta Ads=1101, Google Ads=1103). Asking for "the platform filter" almost always means `media` |
+| Valid `media` codes | 1-19, 21-23, 25-26, 28-31, 33-34 — enumerated one code at a time because an invalid code fails the WHOLE request with a parameter error rather than being ignored |
+| `purpose` values | 1, 2, 3 valid; 4+ is a parameter error. The Meta family surfaces under `purpose: 3`; `purpose: 2` carries AdMob/YouTube/Unity. TikTok answers under both |
+| No `title` field | Probed the live schema: `creative.title/text/copy/adText` and `material.title/description/marketingWord` are all rejected by validation. The ad copy is `creative.slogan` (populated on 100/100 rows); `creative.description` exists but came back null on every row observed |
 | Impression display | Tops out at **">10M"** — a *prefixed* value. `parse_compact_number` handles `>`/`<`/`~`/`+`; without that the highest-impression creatives parsed to NULL and fell out of every threshold and sort |
 | CDN Accept | Content-negotiated: a browser Accept gets a 61 KB **webp** where no Accept gets the 156 KB **jpeg**. `_download` pins Accept to the original so the bytes match `media_format`, which comes from the API payload |
 

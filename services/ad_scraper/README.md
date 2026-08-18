@@ -50,6 +50,36 @@ so the downloader pins `Accept` to the original representation. The stored
 `content_type` is logged on every upload, so a CDN-side change shows up in
 Loki instead of quietly diverging.
 
+## Which facet is "the platform"? (read this one)
+
+| Facet | What it actually means | Example values |
+| - | - | - |
+| **`media`** | **the social network / ad network** — this is the one you want for "show me TikTok ads" | Instagram(1) · Facebook(2) · X(3) · TikTok(13) · Messenger(16) · Pinterest(17) · Snapchat(25) · YouTube(11) · Threads(32) · AdMob(4) · AppLovin(8) · Unity Ads(5) · Kwai(28) · Yandex(30) · VKontakte(31) |
+| `platform` | the **operating system** | iOS(2) · Android(1) |
+| `channel` | the ad-buying platform | Meta Ads(1101) · Google Ads(1103) |
+| `format` | the ad slot | In-Feed(106) · Native(105) · Banner(102) · Interstitial(103) |
+| `area` | country | `TR` · `US` · `DE` … |
+| `resource_element` | creative element tags | Phone · Person … |
+
+**`platform` does NOT mean the social network.** It is the OS. Filtering by
+TikTok/Facebook/Instagram is the **`media`** facet. This naming comes from
+the upstream API and is easy to get backwards — a `platform=1` filter reads
+like "Android", not like "Facebook".
+
+Corpus sizes measured against the live API, so you can see what a filter is
+worth: Instagram 215M, Facebook 212M, Messenger 163M, Facebook FAN 161M,
+AdMob 51M, YouTube 21M, **TikTok 6.0M**, Pinterest 1.7M, Yandex 1.0M,
+VKontakte 0.67M, Snapchat 9k, X 0.3M.
+
+Valid `media` codes are 1-19, 21-23, 25-26, 28-31, 33-34. An invalid code
+does **not** get ignored — it fails the whole request with
+`"Parameter error, please clear the filter and refresh"`.
+
+`purpose` selects the corpus and 1, 2, 3 are the only valid values (4+ is a
+parameter error). The Meta family (Facebook / Instagram / Messenger /
+Threads) shows up under `purpose: 3`; `purpose: 2` carries the
+AdMob/YouTube/Unity side. TikTok answers under both.
+
 ## The pagination ceiling — read this before writing a filter
 
 Verified against the live API:
@@ -70,10 +100,18 @@ The service will not let this fail quietly:
   still succeeds but records `stats.truncated = true` with a note, logs
   `ad_filter_too_broad`, and increments `ad_filter_truncated_total`.
 
+**Past the end, the API repeats the last page instead of returning empty.**
+Measured: a filter with `total: 26` answers pages 1, 2 and 3 with the
+identical 26 rows. So `page_to` is an upper bound, not an instruction — the
+walk stops as soon as `page × limit >= total`. Without that, `page_to=200`
+on a 26-row filter would spend 200 requests fetching the same 26 creatives
+200 times, and report `materials_seen: 5200`. Rows re-served within one job
+are counted separately as `stats.materials_repeated` and are not re-upserted.
+
 Also worth knowing: the feed is live and `order=max_dt_desc` re-sorts
-between requests, so rows shift across pages. Materials are deduped by id
-on upsert, so this is harmless — but page count is not a row count. A
-date-bounded filter is more reproducible.
+between requests, so rows shift across pages of a large result set.
+Materials are deduped by id, so this is harmless — but page count is not a
+row count. A date-bounded filter is more reproducible.
 
 ## Setup
 

@@ -213,13 +213,21 @@ class YouCloudClient:
     ) -> AsyncIterator[Dict[str, Any]]:
         """Yield `(page_number, materialList_payload)` across a page window.
 
-        Stops early on the first page that returns no rows — the API pads
-        rather than erroring past the end of a result set.
+        Two stop conditions, and the second one is load-bearing:
+
+        1. A page that returns no rows.
+        2. `page * limit >= total` — because **past the end the API repeats
+           the last page instead of returning empty.** Measured: a filter with
+           `total: 26` answers pages 1, 2 and 3 with the identical 26 rows.
+           Without this bound, `page_to=200` on that filter would spend 200
+           requests to fetch 26 creatives 200 times over, and the job's
+           `materials_seen` would report 5 200.
 
         A politeness delay separates pages. Note that `order=max_dt_desc`
         over a live feed means rows shift between requests, so the same
-        material can surface on two pages; the upsert makes that harmless
-        but it does mean page count is not a row count.
+        material can still surface on two adjacent pages of a large result
+        set; the upsert makes that harmless, but page count is not a row
+        count.
         """
         last_page = page_to if page_to is not None else settings.AD_DEFAULT_PAGE_TO
         self.assert_page_within_ceiling(last_page)
@@ -233,10 +241,28 @@ class YouCloudClient:
                 await asyncio.sleep(settings.AD_API_PAGE_DELAY_SECONDS)
             payload = await self.material_list(variables, page=page, order=order)
             yield page, payload
+
             rows = payload.get("data")
             if not isinstance(rows, list) or not rows:
-                logger.info("ad_pagination_exhausted", page=page)
+                logger.info("ad_pagination_exhausted", page=page, reason="empty_page")
                 return
+
+            total = payload.get("total")
+            if isinstance(total, int) and total >= 0:
+                # `limit` is server-fixed; trust the payload's own value when
+                # present so a server-side change doesn't silently break the
+                # bound.
+                limit = payload.get("limit")
+                limit = limit if isinstance(limit, int) and limit > 0 else settings.AD_PAGE_SIZE
+                if page * limit >= total:
+                    logger.info(
+                        "ad_pagination_exhausted",
+                        page=page,
+                        reason="reached_total",
+                        total=total,
+                        limit=limit,
+                    )
+                    return
 
     # ------------------------------------------------------------------
     # Guards

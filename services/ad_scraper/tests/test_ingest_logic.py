@@ -166,6 +166,20 @@ class TestAlreadyMirrored:
         assert "mirror_cached" in IngestStats().as_dict()
 
 
+class TestRepeatedRows:
+    """The API re-serves the last page past the end of a result set, so the
+    job must not count those rows twice.
+    """
+
+    def test_stats_carry_the_repeat_counter(self):
+        assert "materials_repeated" in IngestStats().as_dict()
+
+    def test_repeat_counter_is_separate_from_seen(self):
+        d = IngestStats(materials_seen=26, materials_repeated=26).as_dict()
+        assert d["materials_seen"] == 26, "distinct creatives"
+        assert d["materials_repeated"] == 26, "re-served rows, counted apart"
+
+
 class TestImageDetection:
     @pytest.mark.parametrize("path", ["a.jpg", "a.jpeg", "a.PNG", "a.webp", "a.gif"])
     def test_recognises_image_extensions(self, path):
