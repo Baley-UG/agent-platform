@@ -189,6 +189,28 @@ async def _proxy(
     )
 
 
+def _require_global_admin_or_403(principal: AdminPrincipal, *, service: str, path: str) -> None:
+    """Reject non-admins, and record who was rejected.
+
+    A 403 that leaves no trace of which principal it denied is unhelpful
+    exactly when it matters: the panel caches the role in localStorage while
+    this check reads it live from the database, so the two can disagree and
+    the user sees a menu entry that the API refuses. Without this line the
+    only way to tell them apart is to guess.
+    """
+    if principal.role == "admin":
+        return
+    logger.warning(
+        "gateway_admin_role_required",
+        service=service,
+        path=path,
+        user_id=principal.user.id,
+        email=principal.user.email,
+        role=principal.role,
+    )
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="admin role required")
+
+
 # ---- /api/v1/cp/{path} → content_pipeline ----
 
 
@@ -235,8 +257,7 @@ async def proxy_instagram_scraper(
     principal: AdminPrincipal = Depends(require_admin_token),
 ) -> Response:
     """Proxy to ig_scraper. Global admin only — scraper has no per-project scope."""
-    if principal.role != "admin":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="admin role required")
+    _require_global_admin_or_403(principal, service="ig_scraper", path=path)
     if not settings.IG_SCRAPER_API_KEY:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -265,8 +286,7 @@ async def proxy_ad_scraper(
     principal: AdminPrincipal = Depends(require_admin_token),
 ) -> Response:
     """Proxy to ad_scraper. Global admin only — it has no per-project scope."""
-    if principal.role != "admin":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="admin role required")
+    _require_global_admin_or_403(principal, service="ad_scraper", path=path)
     if not settings.AD_SCRAPER_API_KEY:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
