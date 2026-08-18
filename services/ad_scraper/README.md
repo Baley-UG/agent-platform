@@ -343,7 +343,8 @@ is a JSONB backfill rather than a re-scrape.
 
 `slogan` is the ad text and the only text the source gives — populated on
 every row observed. `asr` is the platform's auto-transcript, present on
-roughly a fifth of video creatives.
+about one video creative in ten (13 of 142 videos observed; 14 of 178 rows
+overall, and never on an image).
 
 **There is no title field.** Probing the live schema shows
 `creative.title/text/copy/adText` and `material.title/description/marketingWord`
@@ -382,6 +383,55 @@ a server-side S3 copy into the project's prefix plus a row with
 `source_provider='appgrowing'`. The ad's `asr` becomes the reference's
 `transcript`, and impressions / days-on-air / advertisers / areas land in
 `metadata` where auto-generation ranking can read them.
+
+## Staying under the rate limit
+
+The upstream answers `00:400998` — "High visiting frequency, please try
+again later" — when we ask too fast. Retrying after that is table stakes;
+the point of `app/services/youcloud/throttle.py` is to hit it rarely.
+
+**The gate is process-wide, not per job.** That is the whole fix. Pacing
+used to be a sleep between pages inside `paginate_materials`, so each job
+spaced its *own* requests — and with `AD_WORKER_CONCURRENCY=2` two jobs in
+one process pushed twice as hard as configured, silently, with concurrency
+as a hidden rate multiplier. Now one shared gate holds its lock across the
+wait, so the process rate is `1 / interval` no matter how many jobs run;
+concurrency changes how many jobs make progress, not how hard we push.
+
+On a refusal the gate does two things, and the second is the one that
+helps: the interval widens geometrically toward a ceiling, **and the shared
+gate is pushed out by a cooldown so sibling jobs pause too.** Backing off
+only the refused request would leave its sibling hammering the endpoint
+that just asked us to slow down. After a run of clean responses the
+interval walks back down, so one bad minute does not throttle the service
+until the container restarts.
+
+Rate limits get their own, larger retry budget
+(`AD_API_RATE_LIMIT_MAX_RETRIES`, default 5) separate from
+`AD_API_MAX_RETRIES`. The reason is arithmetic, not optimism: a rate limit
+that exhausts the transport budget fails the job, and the requeued job
+restarts at `page_from` — spending *more* requests against the endpoint
+that asked for less. Waiting in place is strictly cheaper.
+
+| Knob | Default | What it does |
+| - | - | - |
+| `AD_API_MIN_REQUEST_INTERVAL_SECONDS` | 1.5 | Floor between any two requests, process-wide |
+| `AD_API_MAX_REQUEST_INTERVAL_SECONDS` | 20 | Ceiling the penalty can reach |
+| `AD_API_RATE_LIMIT_COOLDOWN_SECONDS` | 30 | How long the whole process pauses on a refusal |
+| `AD_API_RATE_LIMIT_MAX_RETRIES` | 5 | The rate limit's own retry budget |
+| `AD_API_JITTER_RATIO` | 0.25 | Added, never subtracted — separate containers share no state |
+
+Metrics to watch: `ad_throttle_wait_seconds_total` rising while
+`ad_rate_limited_total` stays flat means the pacing is working. Both rising
+means the floor is too small for this account — raise
+`AD_API_MIN_REQUEST_INTERVAL_SECONDS` rather than the retry budget.
+`ad_throttle_interval_seconds` sitting at the ceiling means we are being
+throttled hard and the job queue is effectively serialised.
+
+Mirror downloads are not paced: they go to the CDN
+(`creative-ag-global-esa.umcdn.cn`), a different host, and every `00:400998`
+observed came from the GraphQL endpoint. If CDN refusals ever appear, they
+need their own gate — this one deliberately guards one endpoint.
 
 ## Error handling worth knowing
 

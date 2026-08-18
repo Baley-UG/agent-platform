@@ -6,6 +6,9 @@ Thin wrapper around httpx with:
   * body-based error classification (`app.services.youcloud.errors`)
   * `AuthExpired` surfaced immediately — only an operator can fix it
   * a page-ceiling guard that fails fast instead of round-tripping
+  * a process-wide rate gate in front of every request, so pacing is a
+    property of the process rather than of one job — see
+    `app.services.youcloud.throttle`
 
 Header notes — these are requirements, not cargo cult:
   * `accept-language` is mandatory. Omit it and the endpoint answers
@@ -24,22 +27,31 @@ silently reroute these calls.
 from __future__ import annotations
 
 import asyncio
+import random
 from typing import Any, AsyncIterator, Dict, Optional
 
 import httpx
 
 from app.core.config import settings
 from app.core.logging import logger
-from app.core.metrics import ad_api_errors_total, ad_pages_fetched_total
+from app.core.metrics import (
+    ad_api_errors_total,
+    ad_pages_fetched_total,
+    ad_rate_limited_total,
+    ad_throttle_interval_seconds,
+    ad_throttle_wait_seconds_total,
+)
 from app.services.youcloud.errors import (
     AuthExpired,
     BadFilter,
+    RateLimited,
     TransportError,
     TransientError,
     YouCloudError,
     classify,
     metric_label,
 )
+from app.services.youcloud.throttle import Throttle, shared_throttle
 from app.services.youcloud.queries import MATERIAL_LIST_OPERATION, MATERIAL_LIST_QUERY
 
 
@@ -54,11 +66,18 @@ class YouCloudClient:
     an operator can produce a new one, so `AuthExpired` is surfaced
     immediately: the job records "token rejected, paste a fresh one" instead
     of retrying its way to the same conclusion.
+
+    `throttle` defaults to the process-wide gate. Pass one explicitly only
+    in tests — a second live gate would defeat the point of having one.
     """
 
-    def __init__(self, *, session_provider) -> None:
+    def __init__(self, *, session_provider, throttle: Optional[Throttle] = None) -> None:
         """Build a client over the injected session provider."""
         self._session_provider = session_provider
+        self._throttle = throttle if throttle is not None else shared_throttle()
+        # Per-client, so a job can report how long IT spent waiting on the
+        # shared gate. The gate's own total mixes concurrent jobs together.
+        self._waited_seconds = 0.0
         self._http = httpx.AsyncClient(
             timeout=settings.AD_API_TIMEOUT_SECONDS,
             headers={
@@ -73,7 +92,16 @@ class YouCloudClient:
             trust_env=False,
             follow_redirects=False,
         )
-        self._max_retries = max(1, settings.AD_API_MAX_RETRIES)
+
+    @property
+    def waited_seconds(self) -> float:
+        """Seconds this client spent waiting at the shared rate gate.
+
+        Surfaced onto the job row: "slow" and "paced" look identical from the
+        outside otherwise, and the difference decides whether to widen the
+        interval or go looking for a real problem.
+        """
+        return self._waited_seconds
 
     async def __aenter__(self) -> "YouCloudClient":
         """Enter the async context; the client is ready on construction."""
@@ -100,14 +128,32 @@ class YouCloudClient:
     ) -> Dict[str, Any]:
         """POST one GraphQL document and return its `data` object.
 
-        Raises the appropriate `YouCloudError` subclass on failure. Retries
-        transport errors and `TransientError` with exponential backoff;
-        `AuthExpired`, `PlanDenied` and `BadFilter` are raised at once —
-        none of them can be fixed by trying again.
+        Every attempt passes the process-wide rate gate first, so a job never
+        outruns its siblings.
+
+        Two retry budgets, deliberately separate:
+
+        * transport failures and "the system is busy" spend
+          `AD_API_MAX_RETRIES`;
+        * `RateLimited` (`00:400998`) spends `AD_API_RATE_LIMIT_MAX_RETRIES`,
+          which is larger, because it is the one failure where waiting
+          reliably works. Letting a rate limit exhaust the transport budget
+          would fail the job, and the requeued job restarts at `page_from` —
+          spending *more* requests against the endpoint that just asked us to
+          slow down. Waiting in place is strictly cheaper.
+
+        `AuthExpired`, `PlanDenied` and `BadFilter` are raised at once; none
+        of them can be fixed by trying again.
         """
         last_error: Optional[YouCloudError] = None
+        # Read per call, not in __init__: config is meant to be live, and a
+        # client constructed before a settings change should honour it.
+        max_retries = max(1, settings.AD_API_MAX_RETRIES)
+        rate_limit_retries = max(1, settings.AD_API_RATE_LIMIT_MAX_RETRIES)
+        attempt = 0
+        rate_limit_attempt = 0
 
-        for attempt in range(1, self._max_retries + 1):
+        while True:
             cookie = await self._session_provider()
             if not cookie:
                 # Missing, expired or locked-out — the provider already
@@ -118,6 +164,13 @@ class YouCloudClient:
                 )
 
             payload = {"operationName": operation_name, "query": query, "variables": variables}
+
+            waited = await self._throttle.acquire()
+            if waited > 0:
+                self._waited_seconds += waited
+                ad_throttle_wait_seconds_total.inc(waited)
+            ad_throttle_interval_seconds.set(self._throttle.interval)
+
             try:
                 response = await self._http.post(
                     settings.AD_API_URL,
@@ -126,9 +179,10 @@ class YouCloudClient:
                     cookies={"localeLanguage": settings.AD_API_LANGUAGE, "sessionId": cookie},
                 )
             except httpx.HTTPError as exc:
+                attempt += 1
                 last_error = TransportError(f"transport failure: {exc}")
                 ad_api_errors_total.labels(code="TransportError").inc()
-                if attempt >= self._max_retries:
+                if attempt >= max_retries:
                     raise last_error from exc
                 await self._backoff(attempt, "transport", str(exc))
                 continue
@@ -137,12 +191,13 @@ class YouCloudClient:
             # status means something upstream of the resolver — a stripped
             # header (406), a WAF, or a gateway. Body is plain text there.
             if not 200 <= response.status_code < 300:
+                attempt += 1
                 last_error = TransportError(
                     f"HTTP {response.status_code}: {response.text[:200]}",
                     code=f"http_{response.status_code}",
                 )
                 ad_api_errors_total.labels(code=f"http_{response.status_code}").inc()
-                if attempt >= self._max_retries:
+                if attempt >= max_retries:
                     raise last_error
                 await self._backoff(attempt, "http_status", str(response.status_code))
                 continue
@@ -150,9 +205,10 @@ class YouCloudClient:
             try:
                 body = response.json()
             except ValueError as exc:
+                attempt += 1
                 last_error = TransportError(f"non-JSON response: {response.text[:200]}", code="non_json")
                 ad_api_errors_total.labels(code="non_json").inc()
-                if attempt >= self._max_retries:
+                if attempt >= max_retries:
                     raise last_error from exc
                 await self._backoff(attempt, "non_json", str(exc))
                 continue
@@ -162,13 +218,40 @@ class YouCloudClient:
                 data = body.get("data")
                 if not isinstance(data, dict):
                     raise TransportError(f"response carried neither errors nor data: {str(body)[:200]}")
+                # Only a clean response counts toward relaxing the gate, so a
+                # burst of errors cannot walk the interval back down.
+                self._throttle.record_success()
+                ad_throttle_interval_seconds.set(self._throttle.interval)
                 return data
 
             ad_api_errors_total.labels(code=metric_label(error)).inc()
 
-            if isinstance(error, TransientError):
+            # Must precede the TransientError branch — RateLimited subclasses it.
+            if isinstance(error, RateLimited):
+                rate_limit_attempt += 1
+                ad_rate_limited_total.inc()
+                # Widens the gate AND pauses sibling jobs, not just this one.
+                interval = self._throttle.penalise(reason="rate_limited")
+                ad_throttle_interval_seconds.set(interval)
                 last_error = error
-                if attempt >= self._max_retries:
+                if rate_limit_attempt >= rate_limit_retries:
+                    raise error
+                logger.warning(
+                    "ad_api_rate_limited",
+                    attempt=rate_limit_attempt,
+                    of=rate_limit_retries,
+                    interval_seconds=round(interval, 3),
+                    detail=str(error)[:200],
+                )
+                # No extra sleep here: `penalise` already pushed the shared
+                # gate out by the cooldown, and the next loop iteration waits
+                # on it. Sleeping again would double the pause.
+                continue
+
+            if isinstance(error, TransientError):
+                attempt += 1
+                last_error = error
+                if attempt >= max_retries:
                     raise error
                 await self._backoff(attempt, "transient", str(error))
                 continue
@@ -176,11 +259,18 @@ class YouCloudClient:
             # AuthExpired / PlanDenied / BadFilter — terminal by design.
             raise error
 
-        raise last_error or TransportError("exhausted retries without a definitive response")
-
     async def _backoff(self, attempt: int, reason: str, detail: str) -> None:
+        """Sleep before the next attempt, with jitter.
+
+        Jitter matters for the same reason it does in the throttle: two
+        worker containers that fail on the same upstream blip would otherwise
+        retry in lockstep and arrive together.
+        """
         delay = 2 ** (attempt - 1)
-        logger.warning("ad_api_retry", reason=reason, attempt=attempt, backoff_seconds=delay, detail=detail[:200])
+        delay *= 1.0 + max(0.0, settings.AD_API_JITTER_RATIO) * random.random()
+        logger.warning(
+            "ad_api_retry", reason=reason, attempt=attempt, backoff_seconds=round(delay, 3), detail=detail[:200]
+        )
         await asyncio.sleep(delay)
 
     # ------------------------------------------------------------------
@@ -223,11 +313,16 @@ class YouCloudClient:
            requests to fetch 26 creatives 200 times over, and the job's
            `materials_seen` would report 5 200.
 
-        A politeness delay separates pages. Note that `order=max_dt_desc`
-        over a live feed means rows shift between requests, so the same
-        material can still surface on two adjacent pages of a large result
-        set; the upsert makes that harmless, but page count is not a row
-        count.
+        Pacing is not this method's job any more: the process-wide gate in
+        `execute` spaces every request, including the first of a job and
+        requests made by other jobs running alongside. The per-page sleep
+        that used to live here paced each job independently, so two
+        concurrent jobs pushed twice as hard as configured.
+
+        Note that `order=max_dt_desc` over a live feed means rows shift
+        between requests, so the same material can still surface on two
+        adjacent pages of a large result set; the upsert makes that harmless,
+        but page count is not a row count.
         """
         last_page = page_to if page_to is not None else settings.AD_DEFAULT_PAGE_TO
         self.assert_page_within_ceiling(last_page)
@@ -237,8 +332,6 @@ class YouCloudClient:
             raise BadFilter(f"page_to ({last_page}) must be >= page_from ({page_from})")
 
         for page in range(page_from, last_page + 1):
-            if page > page_from and settings.AD_API_PAGE_DELAY_SECONDS > 0:
-                await asyncio.sleep(settings.AD_API_PAGE_DELAY_SECONDS)
             payload = await self.material_list(variables, page=page, order=order)
             yield page, payload
 

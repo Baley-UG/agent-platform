@@ -65,6 +65,10 @@ class IngestStats:
     # of the same filter used to re-download every video it already held.
     mirror_cached: int = 0
     total_reported: Optional[int] = None
+    # Seconds this job spent held at the shared rate gate. Distinguishes
+    # "the upstream is slow" from "we are deliberately pacing ourselves" —
+    # the two look identical in wall-clock time otherwise.
+    throttle_wait_seconds: float = 0.0
     truncated: bool = False
     notes: list[str] = field(default_factory=list)
 
@@ -84,6 +88,7 @@ class IngestStats:
             "mirror_skipped": self.mirror_skipped,
             "mirror_cached": self.mirror_cached,
             "total_reported": self.total_reported,
+            "throttle_wait_seconds": self.throttle_wait_seconds,
             "truncated": self.truncated,
             "notes": self.notes,
         }
@@ -275,6 +280,8 @@ async def run_job(
                 # for a drifting `total` on a live feed.
                 logger.info("ad_page_all_repeats", job_id=str(job_id), page=page)
                 break
+
+        stats.throttle_wait_seconds = round(client.waited_seconds, 2)
 
     # A page that returned rows proves the cookie works; record that so an
     # expiring-but-valid session doesn't look stale on the dashboard.

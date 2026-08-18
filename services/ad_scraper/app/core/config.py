@@ -144,8 +144,23 @@ class Settings(BaseSettings):
     # Retries apply to transport errors and the "system is busy" transient
     # error only. Auth / plan / filter errors are terminal by design.
     AD_API_MAX_RETRIES: int = Field(default=3)
-    # Politeness delay between page requests inside one job.
-    AD_API_PAGE_DELAY_SECONDS: float = Field(default=1.5)
+    # ----- Rate limiting (see app/services/youcloud/throttle.py) -----
+    # Minimum seconds between any two upstream requests, PROCESS-WIDE — not
+    # per job. This used to be a per-job page delay, which meant
+    # AD_WORKER_CONCURRENCY=2 quietly doubled the rate the endpoint saw.
+    AD_API_MIN_REQUEST_INTERVAL_SECONDS: float = Field(default=1.5)
+    # Ceiling the interval can grow to after repeated `00:400998` refusals.
+    AD_API_MAX_REQUEST_INTERVAL_SECONDS: float = Field(default=20.0)
+    # How long the whole process pauses on a rate limit. Generous on
+    # purpose: a rate limiter answers patience, and re-running a job from
+    # page 1 costs far more requests than waiting does.
+    AD_API_RATE_LIMIT_COOLDOWN_SECONDS: float = Field(default=30.0)
+    # Rate limits get their own, larger budget than transport errors: it is
+    # the one failure where trying again later reliably works.
+    AD_API_RATE_LIMIT_MAX_RETRIES: int = Field(default=5)
+    # Added, never subtracted. Two worker containers share no throttle
+    # state, so without jitter their requests drift into lockstep.
+    AD_API_JITTER_RATIO: float = Field(default=0.25)
 
     # ----- Pagination ceilings (verified against the live API) -----
     # `materialList` refuses `page > 200` with "Parameter error, please
