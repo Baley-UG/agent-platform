@@ -75,6 +75,40 @@ Valid `media` codes are 1-19, 21-23, 25-26, 28-31, 33-34. An invalid code
 does **not** get ignored — it fails the whole request with
 `"Parameter error, please clear the filter and refresh"`.
 
+Codes observed so far, with the corpus each one reports under `purpose: 2`,
+all dates:
+
+| Code | Network | | Code | Network |
+| - | - | - | - | - |
+| 1 | Instagram | | 13 | **TikTok** (4 244 227) |
+| 2 | Facebook | | 16 | Messenger |
+| 4 | AdMob | | 21 | AdSense (27 744 — tiny) |
+| 5 | Unity Ads | | 22 | Mintegral |
+| 6 | ironSource | | 23 | Pangle |
+| 8 | AppLovin | | 26 | Moloco |
+| 9 | Vungle | | 28 | Kwai |
+| 10 | Facebook (FAN) | | 30 | Yandex |
+| 11 | YouTube | | 32 | Threads |
+| 12 | Chartboost | | 33 | Bigo Ads |
+| | | | 34 | InMobi |
+
+### Two things about `media` that look like bugs
+
+**A row reports its creative's whole network set, not the part you asked
+for.** Filtering `media: [13]` returns 50 TikTok rows — and those same rows
+also list Pangle (17), Instagram (6), Facebook (6): one creative runs on
+several networks, and the payload gives all of them. If the UI filters by
+TikTok and then renders the row's `media` array, users will read
+"TikTok, Pangle, Instagram" and conclude the filter is broken. It is not.
+The match is "any of its networks is in your filter".
+
+**A small network vanishes inside a large filter.** `media:
+[4,11,21,2,1,10,16,32]` (Google + Meta) reports 194 178 669 rows; adding 13
+takes it to 198 422 085, so TikTok is 2.1% of the union — and page 1 under
+`order: max_dt_desc` came back with **zero** TikTok rows. Nothing is wrong;
+the newest 50 of 198M simply belong to the big networks. To see a specific
+network, filter to it alone.
+
 ## What the three `purpose` values actually are
 
 `purpose` is a required `Int!` and only 1, 2 and 3 are accepted — 4 and up
