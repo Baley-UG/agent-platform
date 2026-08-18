@@ -11,6 +11,7 @@ import pytest
 from app.core.config import settings
 from app.services.youcloud.client import YouCloudClient
 from app.services.youcloud.errors import AuthExpired, BadFilter, PlanDenied, TransportError
+from app.services.youcloud.throttle import Throttle
 
 
 class _FakeResponse:
@@ -25,11 +26,20 @@ class _FakeResponse:
         return self._payload
 
 
-def _client(session="cookie-value"):
+def _instant_throttle():
+    """A gate that never waits, so these tests spend no wall-clock time.
+
+    Pacing itself is covered in `test_youcloud_throttle.py` against an
+    injected clock; here it would only make every test 1.5s slower.
+    """
+    return Throttle(min_interval=0.0, max_interval=0.0, cooldown=0.0, jitter_ratio=0.0)
+
+
+def _client(session="cookie-value", throttle=None):
     async def provider():
         return session
 
-    return YouCloudClient(session_provider=provider)
+    return YouCloudClient(session_provider=provider, throttle=throttle or _instant_throttle())
 
 
 def _ok_payload(rows=1, total=100):
@@ -199,7 +209,6 @@ class TestExecute:
 class TestPaginate:
     async def test_walks_the_requested_window(self, monkeypatch):
         client = _client()
-        monkeypatch.setattr(settings, "AD_API_PAGE_DELAY_SECONDS", 0)
         seen_pages = []
 
         async def fake_post(url, **kwargs):
@@ -216,7 +225,6 @@ class TestPaginate:
 
     async def test_stops_on_the_first_empty_page(self, monkeypatch):
         client = _client()
-        monkeypatch.setattr(settings, "AD_API_PAGE_DELAY_SECONDS", 0)
         responses = [_FakeResponse(_ok_payload(rows=2)), _FakeResponse(_ok_payload(rows=0))]
 
         async def fake_post(*args, **kwargs):
@@ -234,7 +242,6 @@ class TestPaginate:
         spend 200 requests fetching the same 26 creatives 200 times.
         """
         client = _client()
-        monkeypatch.setattr(settings, "AD_API_PAGE_DELAY_SECONDS", 0)
         requested = []
 
         async def fake_post(url, **kwargs):
@@ -249,7 +256,6 @@ class TestPaginate:
 
     async def test_walks_every_page_a_large_total_justifies(self, monkeypatch):
         client = _client()
-        monkeypatch.setattr(settings, "AD_API_PAGE_DELAY_SECONDS", 0)
 
         async def fake_post(*args, **kwargs):
             return _FakeResponse(_ok_payload(rows=50, total=10_000))
@@ -264,7 +270,6 @@ class TestPaginate:
         change cannot silently break the bound.
         """
         client = _client()
-        monkeypatch.setattr(settings, "AD_API_PAGE_DELAY_SECONDS", 0)
 
         async def fake_post(*args, **kwargs):
             payload = _ok_payload(rows=10, total=20)
@@ -278,7 +283,6 @@ class TestPaginate:
 
     async def test_missing_total_falls_back_to_the_empty_page_stop(self, monkeypatch):
         client = _client()
-        monkeypatch.setattr(settings, "AD_API_PAGE_DELAY_SECONDS", 0)
         responses = [
             _FakeResponse({"data": {"materialList": {"page": 1, "limit": 50, "data": [{"material": {"id": "a"}}]}}}),
             _FakeResponse({"data": {"materialList": {"page": 2, "limit": 50, "data": []}}}),
@@ -316,7 +320,6 @@ class TestPaginate:
 
     async def test_injects_page_and_order_without_mutating_the_caller_dict(self, monkeypatch):
         client = _client()
-        monkeypatch.setattr(settings, "AD_API_PAGE_DELAY_SECONDS", 0)
         filters = {"purpose": 2, "media": [2]}
         captured = {}
 

@@ -6,7 +6,7 @@ the mirror service as the milestones land.
 """
 
 from fastapi import FastAPI
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter, Gauge, Histogram
 from starlette.requests import Request
 from starlette.routing import Match
 from starlette_prometheus import PrometheusMiddleware, metrics
@@ -72,6 +72,27 @@ ad_api_errors_total = Counter(
     "YouCloud GraphQL errors, keyed by their extensions.c code.",
     labelnames=("code",),
 )
+# `00:400998` — "High visiting frequency". Broken out of ad_api_errors_total
+# because it is the one error rate that should drive a config change
+# (AD_API_MIN_REQUEST_INTERVAL_SECONDS) rather than an investigation.
+ad_rate_limited_total = Counter(
+    "ad_rate_limited_total",
+    "Upstream rate-limit refusals (extensions.c 00:400998).",
+)
+# Seconds spent waiting at the process-wide throttle. Rising with a flat
+# ad_rate_limited_total means the pacing is doing its job; both rising means
+# the interval floor is too small for the account.
+ad_throttle_wait_seconds_total = Counter(
+    "ad_throttle_wait_seconds_total",
+    "Cumulative seconds requests spent waiting for the shared rate gate.",
+)
+# The live interval, including any penalty. Should sit at the configured
+# floor; a value stuck at the ceiling means we are being throttled hard.
+ad_throttle_interval_seconds = Gauge(
+    "ad_throttle_interval_seconds",
+    "Current minimum seconds between upstream requests, process-wide.",
+)
+
 ad_login_failures_total = Counter(
     "ad_login_failures_total",
     "Failed attempts to obtain a fresh YouCloud session.",
