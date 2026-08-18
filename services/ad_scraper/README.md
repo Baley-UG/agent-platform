@@ -339,6 +339,19 @@ The wire format has two traps. Both are renamed on the way in:
 The untouched payload is kept in `ad_materials.raw`, so improving a mapping
 is a JSONB backfill rather than a re-scrape.
 
+## Where the ad copy lives
+
+`slogan` is the ad text and the only text the source gives — populated on
+every row observed. `asr` is the platform's auto-transcript, present on
+roughly a fifth of video creatives.
+
+**There is no title field.** Probing the live schema shows
+`creative.title/text/copy/adText` and `material.title/description/marketingWord`
+are all rejected by validation; the web UI's own query asks for the same
+`slogan` + `description` pair we do. `description` and `txt_url` are declared
+by the upstream but came back empty on every row observed, so don't build a
+layout that needs them.
+
 ## Feeding content_pipeline
 
 ```bash
