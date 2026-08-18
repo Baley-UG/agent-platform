@@ -1,0 +1,337 @@
+{
+  "page": 1,
+  "total": 135158767,
+  "limit": 50,
+  "data": [
+    {
+      "material": {
+        "id": "a908ba4485611aeefed5e2df204550d2",
+        "type": 202,
+        "startDate": "2025-09-18",
+        "endDate": "2026-08-18",
+        "duration": "335",
+        "cnt_ad_id": 500,
+        "media": [
+          {
+            "id": 32,
+            "name": "Threads",
+            "icon": "https://static-ag-global.umcdn.cn/media/246314.png",
+            "description": ""
+          },
+          {
+            "id": 1,
+            "name": "Instagram",
+            "icon": "https://static-ag-global.umcdn.cn/media/381614.png",
+            "description": ""
+          },
+          {
+            "id": 2,
+            "name": "Facebook",
+            "icon": "https://static-ag-global.umcdn.cn/media/820994.png",
+            "description": ""
+          }
+        ],
+        "channel": [
+          {
+            "id": 1101,
+            "name": "Meta Ads",
+            "icon": "https://static-ag-global.umcdn.cn/channel/78012058.png"
+          }
+        ],
+        "area": [
+          {
+            "cc": "JP",
+            "name": "Japan",
+            "icon": "https://static-ag-global.umcdn.cn/flag/JP.png"
+          },
+          {
+            "cc": "KR",
+            "name": "Korea",
+            "icon": "https://static-ag-global.umcdn.cn/flag/KR.png"
+          },
+          {
+            "cc": "HK",
+            "name": "Hong Kong SAR",
+            "icon": "https://static-ag-global.umcdn.cn/flag/HK.png"
+          }
+        ],
+        "format": [
+          {
+            "id": 106,
+            "name": "In-Feed"
+          }
+        ],
+        "creative": {
+          "id": null,
+          "type": 202,
+          "slogan": "🔥🔥 Soon after unemployed graduate Judah Shaw finds himself a penniless scholar in Qirelia, he is forced by the system to win his wives' affection, despite their marriages being purely convenient. To his surprise, among them are a princess, a general's daughter, and a merchant heiress, who bring him not only fortune but also a future brighter than he ever imagined.\n👇Watch the original short drama series now🥳",
+          "description": null,
+          "resource": [
+            {
+              "width": 360,
+              "height": 640,
+              "format": "mp4",
+              "path": "https://creative-ag-global-esa.umcdn.cn/mp4/a9/08/ba/a908ba4485611aeefed5e2df204550d2.mp4?auth_key=1788334146-REDACTED-0-REDACTED",
+              "poster": "https://creative-ag-global-esa.umcdn.cn/jpeg/z5/cd/ff/z5cdff0a4b9e82d21c9769e5f40a6fa2.jpeg?auth_key=1788334146-REDACTED-0-REDACTED",
+              "duration": 409,
+              "id": "OM5lPVxQz~yXvFhrAMubkQ=="
+            }
+          ],
+          "txtUrl": ""
+        },
+        "platform": [
+          {
+            "id": 1,
+            "name": "Android"
+          },
+          {
+            "id": 2,
+            "name": "iOS"
+          }
+        ],
+        "resourceElement": [
+          {
+            "id": 34,
+            "parentId": null,
+            "name": "Asian Face"
+          },
+          {
+            "id": 40,
+            "parentId": null,
+            "name": "Solo"
+          },
+          {
+            "id": 41,
+            "parentId": null,
+            "name": "Group"
+          },
+          {
+            "id": 9,
+            "parentId": null,
+            "name": "Real Scene"
+          },
+          {
+            "id": 13,
+            "parentId": null,
+            "name": "Real Person "
+          },
+          {
+            "id": 27,
+            "parentId": null,
+            "name": "Youth"
+          },
+          {
+            "id": 28,
+            "parentId": null,
+            "name": "Middle-aged"
+          },
+          {
+            "id": 30,
+            "parentId": null,
+            "name": "Man"
+          },
+          {
+            "id": 31,
+            "parentId": null,
+            "name": "Woman"
+          }
+        ],
+        "similar_cnt": "3",
+        "impression_inc_2y": "1.8M",
+        "violation": null,
+        "cooperate": [],
+        "campaign": [
+          {
+            "id": "M3OgFwcr4yLVdauQFomkHA==",
+            "name": "DramaBox - Stream Drama Shorts",
+            "icon": "https://app-ag-global-esa.umcdn.cn/png/e4f2c4a507bbbf922067f6f0a594c101.png?auth_key=1787124546-REDACTED-0-REDACTED",
+            "types": [
+              101,
+              201
+            ],
+            "developer": {
+              "id": "hm8Y5s--GJ6AFEwFPnVp4A==",
+              "name": "STORYMATRIX",
+              "area": {
+                "cc": "CN",
+                "name": "China",
+                "icon": "https://static-ag-global.umcdn.cn/flag/CN.png"
+              }
+            },
+            "alias": [
+              "DramaBox - Curtas de Drama",
+              "DramaBox - Dramen Streaming",
+              "DramaBox - Film et Drame Court",
+              "DramaBox - Filme und Dramen",
+              "DramaBox - Filmes e Dramas",
+              "DramaBox - Guarda Short Drama",
+              "DramaBox - Kısa Dizi Keyfi",
+              "DramaBox - Series en Línea",
+              "DramaBox - 全網熱門短劇、海量精品短視頻隨心看",
+              "DramaBox - 全网热门短剧、海量精品短视频随心看",
+              "DramaBox - 미니시리즈 스트리밍 플레이어",
+              "DramaBox - 영화와 숏폼 드라마",
+              "DramaBox – Xem phim ngắn",
+              "DramaBox – สตรีมละครสั้น",
+              "DramaBox-Oglądaj krótkie dramy",
+              "DramaBox（ドラマボックス） -ショートドラマ見放題",
+              "Dramabox - Drama Pendek",
+              "المسلسلات القصيرة DramaBox"
+            ],
+            "gp_app_url": "https://play.google.com/store/apps/details?id=com.storymatrix.drama&hl=zh_TW&gl=TW",
+            "ios_app_url": "https://apps.apple.com/ae/app/id6445905219",
+            "__typename": "AppBrand"
+          },
+          {
+            "id": "8oXXLN-Cd2glyMG9a9~TjA==",
+            "type": 401,
+            "name": "fb.dramabox.com",
+            "icon": "https://creative-ag-global-esa.umcdn.cn/jpeg/6b/97/06/6b97060640aacf99f17145667d9c20f1.jpeg?auth_key=1788334146-REDACTED-0-REDACTED",
+            "__typename": "Website"
+          },
+          {
+            "id": "H5jU19LN-WYIs877AcJmng==",
+            "type": 400,
+            "name": "Ruling Over All I See (Dubbed) ",
+            "__typename": "Playlet"
+          }
+        ],
+        "asr": "",
+        "gender": "1"
+      }
+    },
+    {
+      "material": {
+        "id": "bb5c56d79ea4fd5234021d9581c8b64b",
+        "type": 102,
+        "startDate": "2024-02-01",
+        "endDate": "2026-08-18",
+        "duration": "930",
+        "cnt_ad_id": 500,
+        "media": [
+          {
+            "id": 11,
+            "name": "YouTube",
+            "icon": "https://static-ag-global.umcdn.cn/media/912714.png",
+            "description": ""
+          },
+          {
+            "id": 4,
+            "name": "AdMob",
+            "icon": "https://static-ag-global.umcdn.cn/media/629550.png",
+            "description": ""
+          },
+          {
+            "id": 16,
+            "name": "Messenger",
+            "icon": "https://static-ag-global.umcdn.cn/media/29722728.png",
+            "description": ""
+          }
+        ],
+        "channel": [
+          {
+            "id": 1103,
+            "name": "Google Ads",
+            "icon": "https://static-ag-global.umcdn.cn/channel/05739559.png"
+          },
+          {
+            "id": 1101,
+            "name": "Meta Ads",
+            "icon": "https://static-ag-global.umcdn.cn/channel/78012058.png"
+          }
+        ],
+        "area": [
+          {
+            "cc": "JP",
+            "name": "Japan",
+            "icon": "https://static-ag-global.umcdn.cn/flag/JP.png"
+          },
+          {
+            "cc": "KR",
+            "name": "Korea",
+            "icon": "https://static-ag-global.umcdn.cn/flag/KR.png"
+          },
+          {
+            "cc": "HK",
+            "name": "Hong Kong SAR",
+            "icon": "https://static-ag-global.umcdn.cn/flag/HK.png"
+          }
+        ],
+        "format": [
+          {
+            "id": 105,
+            "name": "Native"
+          },
+          {
+            "id": 102,
+            "name": "Banner"
+          },
+          {
+            "id": 106,
+            "name": "In-Feed"
+          }
+        ],
+        "creative": {
+          "id": null,
+          "type": 102,
+          "slogan": "HD Video Downloader",
+          "description": null,
+          "resource": [
+            {
+              "width": 600,
+              "height": 314,
+              "format": "jpeg",
+              "path": "https://creative-ag-global-esa.umcdn.cn/jpeg/bb/5c/56/bb5c56d79ea4fd5234021d9581c8b64b.jpeg?auth_key=1788334146-REDACTED-0-REDACTED",
+              "poster": "",
+              "duration": 0,
+              "id": "7b-oMQZUy3IPnXBdwSmUvA=="
+            }
+          ],
+          "txtUrl": ""
+        },
+        "platform": [
+          {
+            "id": 1,
+            "name": "Android"
+          }
+        ],
+        "resourceElement": [
+          {
+            "id": 21,
+            "parentId": null,
+            "name": "Phone"
+          }
+        ],
+        "similar_cnt": "0",
+        "impression_inc_2y": "1.1M",
+        "violation": null,
+        "cooperate": [],
+        "campaign": [
+          {
+            "id": "yscR4ZQ5GNMdwbnrFs5Now==",
+            "name": "All Movie & Video Downloader",
+            "icon": "https://app-ag-global-esa.umcdn.cn/png/f92eacd052af2110ba69523d54a8623e.png?auth_key=1787124546-REDACTED-0-REDACTED",
+            "types": [
+              201
+            ],
+            "developer": {
+              "id": "QP1eG6jMWXu85FEk4Cfu7g==",
+              "name": "All Video Downloader & hubMate Apps",
+              "area": {
+                "cc": null,
+                "name": null,
+                "icon": null
+              }
+            },
+            "alias": [],
+            "gp_app_url": "https://play.google.com/store/apps/details?id=com.allsimpleplayvideo.socialdownloader&hl=zh_TW&gl=TW",
+            "ios_app_url": "https://apps.apple.com/ae/app/id0",
+            "__typename": "AppBrand"
+          }
+        ],
+        "asr": "",
+        "gender": "3"
+      }
+    }
+  ]
+}

@@ -12,6 +12,7 @@ from app.api.v1.deps import get_project, get_session, require_api_key
 from app.core import s3
 from app.models.projects import Project
 from app.schemas.references import (
+    ReferenceImportFromAds,
     ReferenceImportFromScraper,
     ReferenceManualUpload,
     ReferenceRead,
@@ -49,6 +50,22 @@ def import_from_scraper(
 ) -> ReferenceRead:
     """Pull an `ig_scraper.ig_posts` row into the reference pool by media pk."""
     return svc.to_read(svc.import_from_scraper(session, project.id, payload), session=session)
+
+
+@router.post("/import-from-ads", response_model=ReferenceRead, status_code=status.HTTP_201_CREATED)
+def import_from_ads(
+    payload: ReferenceImportFromAds,
+    project: Project = Depends(get_project),
+    session: Session = Depends(get_session),
+) -> ReferenceRead:
+    """Pull an `ad_scraper.ad_materials` row into the reference pool.
+
+    Needs no download: ad_scraper already mirrored the creative into the
+    shared bucket, so this is a server-side S3 copy plus a row. The ad's
+    `asr` transcript and its impression / days-on-air metrics land in
+    `metadata` for the analyzer and for auto-generation ranking.
+    """
+    return svc.to_read(svc.import_from_ads(session, project.id, payload), session=session)
 
 
 @router.get("", response_model=List[ReferenceRead])

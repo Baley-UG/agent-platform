@@ -344,6 +344,57 @@ services:
     networks:
       - monitoring
 
+  # --------------------------------------------------------------------
+  # ad_scraper microservice — AppGrowing/YouCloud ad intelligence.
+  # Two roles, same image. No scheduler: ingestion is operator-driven
+  # through POST /api/v1/jobs.
+  # --------------------------------------------------------------------
+  ad-scraper-api:
+    build:
+      context: ./services/ad_scraper
+      args:
+        APP_ENV: ${APP_ENV:-development}
+    env_file:
+      - .env
+    environment:
+      - APP_ENV=${APP_ENV:-development}
+      - POSTGRES_HOST=${POSTGRES_HOST:-db}
+    # Internal only by default, same as ig-scraper-api. The main `app/`
+    # gateway proxies admin requests at /api/v1/ad-scraper/*; publish the
+    # port through docker-compose.override.yml to hit it directly in dev.
+    expose:
+      - "8083"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: on-failure
+    networks:
+      - monitoring
+
+  ad-scraper-worker:
+    build:
+      context: ./services/ad_scraper
+      args:
+        APP_ENV: ${APP_ENV:-development}
+    command: ["python", "-m", "app.worker"]
+    env_file:
+      - .env
+    environment:
+      - APP_ENV=${APP_ENV:-development}
+      - POSTGRES_HOST=${POSTGRES_HOST:-db}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: on-failure
+    networks:
+      - monitoring
+
 
 networks:
   monitoring:

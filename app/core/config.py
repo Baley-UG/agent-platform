@@ -222,6 +222,8 @@ class Settings:
         self.CONTENT_PIPELINE_API_KEY = os.getenv("CP_API_KEY", "")
         self.IG_SCRAPER_URL = os.getenv("IG_SCRAPER_URL", "http://ig-scraper-api:8081")
         self.IG_SCRAPER_API_KEY = os.getenv("IG_SCRAPER_API_KEY", "")
+        self.AD_SCRAPER_URL = os.getenv("AD_SCRAPER_URL", "http://ad-scraper-api:8083")
+        self.AD_SCRAPER_API_KEY = os.getenv("AD_SCRAPER_API_KEY", "")
 
         # Logging Configuration
         self.LOG_DIR = Path(os.getenv("LOG_DIR", "logs"))

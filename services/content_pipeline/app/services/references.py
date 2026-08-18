@@ -22,13 +22,14 @@ from app.models.content_references import ContentReference
 from app.models.projects import Project
 from app.models.reference_usages import ReferenceUsage
 from app.schemas.references import (
+    ReferenceImportFromAds,
     ReferenceImportFromScraper,
     ReferenceManualUpload,
     ReferenceRead,
     ReferenceUpdate,
     UsageCheck,
 )
-from app.services import scraper_bridge
+from app.services import ad_scraper_bridge, scraper_bridge
 
 
 def to_read(
@@ -296,6 +297,138 @@ def import_from_scraper(
     # sources already have a per-slide init image via
     # `metadata.slide_s3_keys`; only video sources need ffmpeg.
     if (media_type == 2 or (raw.get("product_type") or "").lower() in ("clips", "reels")) and media_s3_key:
+        enqueue_frame_extract(committed)
+
+    return committed
+
+
+def _copy_mirrored_object(source_key: str, project_id: uuid.UUID) -> Optional[str]:
+    """Server-side copy of another service's mirrored object into our prefix.
+
+    Returns the new key, or None on failure (non-fatal — the caller falls
+    back to referencing the source key in place). No bytes pass through this
+    process; S3 does the copy.
+    """
+    if not source_key or not s3.is_configured():
+        return None
+    filename = os.path.basename(source_key) or "asset.bin"
+    dest_key = s3.make_key(project_id, "references", filename)
+    try:
+        return s3.copy_object(source_key, dest_key)
+    except Exception as exc:  # noqa: BLE001 — boto3 raises a wide family
+        logger.warning(
+            "reference_s3_copy_failed",
+            source_key=source_key[:160],
+            dest_key=dest_key[:160],
+            error=str(exc),
+        )
+        return None
+
+
+def import_from_ads(
+    session: Session,
+    project_id: uuid.UUID,
+    payload: ReferenceImportFromAds,
+    created_by: Optional[str] = None,
+) -> ContentReference:
+    """Pull an `ad_scraper.ad_materials` row into the reference pool.
+
+    No download happens here. ad_scraper already mirrored the creative into
+    the shared bucket at ingestion time — YouCloud's signed CDN URLs expire
+    roughly 15 days out, so waiting until import would often mean fetching a
+    403. We either copy that object into this project's prefix (default) or
+    reference it in place.
+
+    A creative with no mirror still imports: the row is created with
+    `media_s3_key=None` and `metadata.source_media_url` for the panel to try,
+    alongside `metadata.source_media_expires_at` so it can tell the operator
+    whether that URL is already dead.
+    """
+    raw = ad_scraper_bridge.fetch_ad_material(payload.material_id)
+    if raw is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"material {payload.material_id} not found in ad_scraper.ad_materials",
+        )
+
+    def _iso(value):
+        return value.isoformat() if value is not None and hasattr(value, "isoformat") else value
+
+    metadata = {
+        # Ad-intelligence signals. `impressions` is the field an
+        # `auto_generation_rules.pick_strategy` can meaningfully sort on.
+        "impressions": raw.get("impression_inc_2y"),
+        "impressions_label": raw.get("impression_inc_2y_raw"),
+        # DAYS on air — a long-running creative is a proven creative. Not
+        # to be confused with `media_duration_sec` below.
+        "run_days": raw.get("run_days"),
+        "ad_count": raw.get("ad_count"),
+        "similar_count": raw.get("similar_cnt"),
+        "media_duration_sec": raw.get("media_duration_sec"),
+        "media_format": raw.get("media_format"),
+        "media_width": raw.get("media_width"),
+        "media_height": raw.get("media_height"),
+        "material_type": raw.get("material_type"),
+        "first_on_air": _iso(raw.get("start_date")),
+        "last_on_air": _iso(raw.get("end_date")),
+        "gender_target": raw.get("gender"),
+        "violation": raw.get("violation"),
+        "media_channels": raw.get("media_names") or [],
+        "areas": raw.get("area_codes") or [],
+        "platforms": raw.get("platform_names") or [],
+        "advertisers": raw.get("advertiser_names") or [],
+        # Fallbacks for a creative whose mirror is missing. The expiry lets
+        # the panel say "dead link" instead of showing a broken player.
+        "source_media_url": raw.get("media_url"),
+        "source_poster_url": raw.get("poster_url"),
+        "source_media_expires_at": _iso(raw.get("media_url_expires_at")),
+        "ad_scraper_media_s3_key": raw.get("media_s3_key"),
+        "ad_scraper_poster_s3_key": raw.get("poster_s3_key"),
+    }
+
+    source_media_key = raw.get("media_s3_key")
+    source_poster_key = raw.get("poster_s3_key")
+    media_s3_key: Optional[str] = None
+    poster_s3_key: Optional[str] = None
+
+    if payload.copy_media:
+        media_s3_key = _copy_mirrored_object(source_media_key, project_id) if source_media_key else None
+        if source_poster_key and source_poster_key == source_media_key:
+            # An image creative is its own poster — reuse the single copy.
+            poster_s3_key = media_s3_key
+        elif source_poster_key:
+            poster_s3_key = _copy_mirrored_object(source_poster_key, project_id)
+        # A failed copy is not a failed import; fall back to referencing
+        # ad_scraper's object rather than losing the asset entirely.
+        media_s3_key = media_s3_key or source_media_key
+        poster_s3_key = poster_s3_key or source_poster_key
+    else:
+        media_s3_key = source_media_key
+        poster_s3_key = source_poster_key
+
+    ref = ContentReference(
+        project_id=project_id,
+        source_provider="appgrowing",
+        source_external_id=str(raw["source_external_id"]),
+        source_url=raw.get("txt_url") or None,
+        media_s3_key=media_s3_key,
+        poster_s3_key=poster_s3_key,
+        # The ad's own copy line is the closest thing to a caption.
+        caption=raw.get("slogan") or raw.get("description"),
+        # ASR is the platform's auto-transcript. Populated on roughly a fifth
+        # of video creatives, and the single most useful input the analyzer
+        # gets from an ad.
+        transcript=raw.get("asr") or None,
+        hashtags=None,
+        metadata_json=metadata,
+        status="approved" if payload.auto_approve else "candidate",
+        imported_by=created_by or "import-from-ads",
+    )
+    committed = _commit_reference(session, ref)
+
+    # Video creatives get the ffmpeg keyframe pass so scenarios have per-scene
+    # init images, same as an imported reel. `material_type` 202 = video.
+    if raw.get("material_type") == 202 and committed.media_s3_key:
         enqueue_frame_extract(committed)
 
     return committed
