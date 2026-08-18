@@ -41,26 +41,42 @@ from app.services import queries
 # upstream documentation: sampling each corpus shows the advertiser-type mix
 # is what separates them. See README, "What the three purpose values
 # actually are".
+# The web app's own `purposeEnum`, read out of its Vue source:
+# {"Game":1,"App":2,"Website":3,"Ec":4,"Account":5,"Domestic":6}. These are
+# the product's top tabs, not a scale — an earlier reading here called them a
+# "gradient from in-app to web inventory", which was a shadow of the real
+# thing: Game peaks on game ad networks (Unity, AdColony) and Website on
+# display (AdSense, X) precisely because they are different verticals.
+#
+# Probed for this account: 4 (Ec) and 5 (Account) are refused with
+# `00:401001`; 6 (Mainland China games) is accepted but answers total 0. Only
+# 1-3 are usable, so only they are offered.
 PURPOSE_OPTIONS: List[Dict[str, Any]] = [
     {
         "code": 1,
-        "name": "App advertisers",
-        "note": "In-app network inventory. AdColony reports 8 732 rows here against 48 under "
-        "purpose 3; Unity Ads peaks here too. Use this for competitor app creatives.",
+        "name": "Game",
+        "note": "Game advertisers. Game ad networks peak here — AdColony reports 8 732 rows "
+        "against 48 under Website, Unity Ads 2 747 539.",
     },
     {
         "code": 2,
-        "name": "Broader mix",
-        "note": "Between the two. Still app-advertiser dominant, but admits far more display "
-        "inventory than 1 — AdSense goes from 1 007 rows to 27 744.",
+        "name": "App",
+        "note": "Non-game app advertisers. The default for this deployment (AD_DEFAULT_PURPOSE).",
     },
     {
         "code": 3,
-        "name": "Web, social and display",
-        "note": "Web and social networks peak here — AdSense 28 342, X 304 137 — and in-app "
-        "networks fall away. The Meta family is ~20x denser than under purpose 1.",
+        "name": "Website",
+        "note": "Website advertisers. Display and social peak here — AdSense 28 342, X 304 137 — "
+        "and the media list narrows to 18 (game networks are hidden).",
     },
 ]
+
+# Not offered, and why. Kept so nobody re-probes them.
+PURPOSE_UNAVAILABLE: Dict[int, str] = {
+    4: "Ec — hidden in the web UI; refused with 00:401001 for this account",
+    5: "Account — hidden in the web UI; refused with 00:401001 for this account",
+    6: "Mainland China games — accepted, but answers total 0 here",
+}
 
 # Networks seen in live payloads. Codes without a name are NOT listed here —
 # they go out as `valid_codes`.
@@ -118,6 +134,266 @@ FORMAT_SEED: Dict[str, str] = {
 MEDIA_VALID_CODES: List[int] = list(range(1, 20)) + list(range(21, 24)) + [25, 26] + list(range(28, 35))
 
 
+# Network categories, from the web app's own grouping. Useful for a
+# sectioned multi-select.
+MEDIA_CATEGORY: Dict[str, str] = {
+    "1": "Social Media",
+    "2": "Social Media",
+    "3": "Social Media",
+    "11": "Social Media",
+    "13": "Social Media",
+    "16": "Social Media",
+    "17": "Social Media",
+    "25": "Social Media",
+    "28": "Social Media",
+    "29": "Social Media",
+    "32": "Social Media",
+    "4": "Ad Networks",
+    "5": "Ad Networks",
+    "6": "Ad Networks",
+    "7": "Ad Networks",
+    "8": "Ad Networks",
+    "9": "Ad Networks",
+    "10": "Ad Networks",
+    "12": "Ad Networks",
+    "21": "Ad Networks",
+    "22": "Ad Networks",
+    "23": "Ad Networks",
+    "26": "Ad Networks",
+    "33": "Ad Networks",
+    "34": "Ad Networks",
+    "14": "Local Media",
+    "15": "Local Media",
+    "18": "Local Media",
+    "19": "Local Media",
+    "30": "Local Media",
+    "31": "Local Media",
+}
+
+# The web UI's one-click network groups. Worth mirroring: a caller reaching
+# for "Meta Ads" otherwise has to know it means five separate codes.
+MEDIA_PRESETS: List[Dict[str, Any]] = [
+    {"name": "Meta Ads", "media": [2, 1, 10, 16, 32]},
+    {"name": "Google Ads", "media": [4, 11, 21]},
+    {"name": "TikTok for Business", "media": [13, 23, 18]},
+]
+
+# Ad placement. 302/401 exist only under purpose 1-4.
+FORMAT_OPTIONS: Dict[str, str] = {
+    "102": "Banner",
+    "103": "Interstitial",
+    "105": "Native",
+    "106": "In-Feed",
+    "110": "Floating",
+    "301": "In-Stream Video",
+    "302": "Rewarded",
+    "401": "Playable",
+}
+
+# What the filter offers. Note this is a SUBSET of the `type` values a
+# material can carry — see MATERIAL_TYPES.
+CREATIVE_TYPE_OPTIONS: List[Dict[str, Any]] = [
+    {"code": 201, "name": "Video", "group": "Video"},
+    {"code": 202, "name": "Vertical Video", "group": "Video"},
+    {"code": 203, "name": "Fullscreen Video", "group": "Video"},
+    {"code": 102, "name": "Image", "group": "Image"},
+    {"code": 104, "name": "Multiple Image", "group": "Image"},
+    {"code": 103, "name": "Animated Image", "group": "Image"},
+    {"code": 301, "name": "Html", "group": "Others"},
+    {"code": 105, "name": "Carousel", "group": "Others"},
+]
+
+# Every value `material.type` can hold. Needed for DISPLAY, not filtering —
+# our own docs previously said only "102 = image/banner, 202 = video", which
+# silently mislabels 201, 203, 103, 104, 105 and 301.
+MATERIAL_TYPES: Dict[str, str] = {
+    "100": "Text",
+    "101": "Icon",
+    "102": "Image",
+    "103": "Animated Image",
+    "104": "Multiple Image",
+    "105": "Carousel",
+    "106": "Ppt",
+    "201": "Video",
+    "202": "Vertical Video",
+    "203": "Fullscreen Video",
+    "301": "Html",
+}
+
+# Upstream sort keys, with the ascending variants the UI also emits.
+ORDER_OPTIONS: Dict[str, str] = {
+    "max_dt_desc": "Last seen, newest first (default)",
+    "max_dt": "Last seen, oldest first",
+    "min_dt_desc": "First seen, newest first",
+    "min_dt": "First seen, oldest first",
+    "cnt_dt_desc": "Active days, most first",
+    "cnt_dt": "Active days, fewest first",
+    "cnt_ad_id_desc": "Related ads, most first",
+    "impression_inc_2y_desc": "Impressions, highest first",
+    "similar_cnt_desc": "Similar creatives, most first",
+}
+
+VIDEO_TIME_OPTIONS: Dict[str, str] = {
+    "1": "under 15s",
+    "2": "16-30s",
+    "5": "31-45s",
+    "6": "46-60s",
+    "4": "over 61s",
+}
+
+MATERIAL_RATIO_OPTIONS: Dict[str, List[str]] = {
+    "Horizontal": ["16:9", "5:4", "3:2", "4:3", "6:5", "2:1", "horizontal"],
+    "Vertical": ["9:16", "4:5", "2:3", "3:4", "5:6", "1:2", "vertical"],
+    "Square": ["1:1"],
+}
+
+APP_CASH_WAY_OPTIONS: Dict[str, str] = {
+    "iap": "In-app purchase only",
+    "iaa": "In-app ads only",
+    "iaa_iap": "Both ads and purchases",
+}
+
+CAMPAIGN_TYPE_OPTIONS: Dict[str, str] = {
+    "101": "App Store",
+    "201": "Google Play",
+    "299": "APK",
+    "298": "RuStore (Android)",
+    "295": "Galaxy Store (Android)",
+}
+
+CATEGORY_OPTIONS: Dict[str, str] = {
+    "1001": "Music",
+    "1002": "Social",
+    "1003": "Entertainment",
+    "1004": "Travel",
+    "1005": "Shopping",
+    "1006": "News",
+    "1007": "Life",
+    "1008": "Tools",
+    "1009": "Educational",
+    "1010": "Finance",
+    "1011": "Navigation",
+    "1012": "Business",
+    "1013": "Health & Fitness",
+    "1014": "Books & Reference",
+    "1015": "Photo & Video",
+    "1016": "Others",
+    "1017": "Weather",
+    "1018": "Sports",
+    "1019": "Productivity",
+    "1020": "Medical",
+    "1021": "Food & Drink",
+}
+
+# Ad language (32) and voiceover language (25) are different lists — asr
+# covers fewer.
+LANGUAGE_OPTIONS: Dict[str, str] = {
+    "af": "Afrikaans",
+    "ar": "Arabic",
+    "bn": "Bangla",
+    "my": "Burmese",
+    "zh": "Chinese (Simplified)",
+    "zh-Hant": "Chinese (Traditional)",
+    "nn": "Norwegian Nynorsk",
+    "no": "Norwegian",
+    "en": "English",
+    "fr": "French",
+    "de": "German",
+    "hi": "Hindi",
+    "km": "Khmer",
+    "id": "Indonesian",
+    "it": "Italian",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "ku": "Kurdish",
+    "ms": "Malay",
+    "mi": "Maori",
+    "nl": "Dutch",
+    "pt": "Portuguese",
+    "ru": "Russian",
+    "es": "Spanish",
+    "sw": "Swahili",
+    "sv": "Swedish",
+    "tl": "Tagalog",
+    "th": "Thai",
+    "tr": "Turkish",
+    "vi": "Vietnamese",
+    "ur": "Urdu",
+    "other": "Others",
+}
+ASR_LANGUAGES: List[str] = [
+    "en",
+    "zh",
+    "vi",
+    "ko",
+    "pt",
+    "hi",
+    "ja",
+    "es",
+    "th",
+    "de",
+    "fr",
+    "ar",
+    "tr",
+    "id",
+    "it",
+    "ru",
+    "nl",
+    "ms",
+    "sv",
+    "tl",
+    "bn",
+    "nn",
+    "no",
+    "sw",
+    "ku",
+]
+
+# `searchDsl` entries are {key, value, type}. The web UI calls this
+# `advanced` in its URL; the GraphQL variable is `searchDsl`.
+SEARCH_DSL_KEYS: List[Dict[str, Any]] = [
+    {"key": "appid", "label": "App ID", "types": ["equal", "notEqual"]},
+    {"key": "campaign_name", "label": "App name", "types": ["contain", "exclude"]},
+    {"key": "slogan", "label": "Ad description", "types": ["contain", "exclude"]},
+    {"key": "asr", "label": "Voiceover text", "types": ["contain", "exclude"]},
+    {"key": "brands_name", "label": "Short dramas", "types": ["contain", "exclude"]},
+    {"key": "developer_name", "label": "Developer", "types": ["contain", "exclude"]},
+]
+
+# Single-value toggles the upstream accepts as 1.
+BOOLEAN_FLAGS: Dict[str, str] = {
+    "isNew": "Latest creatives only",
+    "isNewAd": "New ads only",
+    "isPre": "Pre-registration campaigns",
+    "resolution": "HD creatives only",
+    "asr": "Has a voiceover transcript",
+    "isViolation": "Flagged as violating",
+    "hasPpid": "Custom product pages",
+    "postpage": "Original post",
+    "hasCooperate": "Partnership ads",
+    "isCreative": "Innovative creatives",
+    "singleArea": "Single-country campaigns",
+}
+
+# In the web UI's URL but NOT variables of the GraphQL document, so sending
+# them in `filters` does nothing at all — no error, no effect. `daterange` is
+# the one that will be reached for: it is UI sugar that compiles to
+# startDate/endDate.
+URL_ONLY_PARAMS: Dict[str, str] = {
+    "daterange": "UI sugar for a relative window; send startDate/endDate instead",
+    "promotionType": "UI-only",
+    "cta": "UI-only",
+    "industry": "UI-only (tab-specific)",
+    "gameStyle": "UI-only (tab-specific)",
+    "outerPurpose": "UI-only",
+    "mtype": "UI-only",
+    "city": "UI-only",
+    "viewType": "UI view switch, not a filter",
+    "isSearchAiScene": "UI-only",
+    "advanced": "the URL name for searchDsl — use searchDsl",
+}
+
+
 def _merge(
     observed: List[Dict[str, Any]],
     seed: Dict[str, str],
@@ -169,7 +445,11 @@ def build(session: Session) -> Dict[str, Any]:
                 "REPEATS the last page instead of returning empty, so a job stops when "
                 "page * limit >= total.",
             },
-            "order": {"type": "enum", "options": list(KNOWN_ORDERS), "default": "max_dt_desc"},
+            "order": {
+                "type": "enum",
+                "options": [{"code": k, "name": v} for k, v in ORDER_OPTIONS.items()],
+                "default": "max_dt_desc",
+            },
             "mirror": {
                 "type": "bool|null",
                 "default": None,
@@ -201,8 +481,9 @@ def build(session: Session) -> Dict[str, Any]:
                 "key": "media",
                 "type": "int[]",
                 "label": "Network",
-                "options": facet("media", MEDIA_SEED),
+                "options": [dict(o, category=MEDIA_CATEGORY.get(o["code"])) for o in facet("media", MEDIA_SEED)],
                 "valid_codes": MEDIA_VALID_CODES,
+                "presets": MEDIA_PRESETS,
                 "notes": [
                     "OR within the list. A creative matches if ANY of its networks is selected.",
                     "Rows report the creative's WHOLE network set, not the part you asked for — "
@@ -234,8 +515,8 @@ def build(session: Session) -> Dict[str, Any]:
                 "key": "format",
                 "type": "int[]",
                 "label": "Ad format",
-                "options": facet("format", FORMAT_SEED),
-                "notes": [],
+                "options": facet("format", FORMAT_OPTIONS),
+                "notes": ["Rewarded (302) and Playable (401) exist only under purpose 1-4."],
             },
             {
                 "key": "channel",
@@ -247,8 +528,12 @@ def build(session: Session) -> Dict[str, Any]:
             {
                 "key": "creativeType",
                 "type": "int[]",
-                "options": [{"code": 102, "name": "Image / banner"}, {"code": 202, "name": "Video"}],
-                "notes": [],
+                "label": "Creative type",
+                "options": CREATIVE_TYPE_OPTIONS,
+                "notes": [
+                    "These are what the FILTER offers. A material's own `type` can also be 100 Text, "
+                    "101 Icon or 106 Ppt — see material_types below for the display map.",
+                ],
             },
             {
                 "key": "isAllDate",
@@ -277,6 +562,70 @@ def build(session: Session) -> Dict[str, Any]:
                 "notes": ["Lenient: unknown values are ignored rather than rejected."],
             },
             {
+                "key": "language",
+                "type": "string[]",
+                "label": "Ad language",
+                "options": [{"code": k, "name": v} for k, v in LANGUAGE_OPTIONS.items()],
+                "notes": [],
+            },
+            {
+                "key": "category",
+                "type": "int[]",
+                "label": "Store category",
+                "options": [{"code": k, "name": v} for k, v in CATEGORY_OPTIONS.items()],
+                "notes": [],
+            },
+            {
+                "key": "campaignType",
+                "type": "int[]",
+                "label": "Promotion platform",
+                "options": [{"code": k, "name": v} for k, v in CAMPAIGN_TYPE_OPTIONS.items()],
+                "notes": [],
+            },
+            {
+                "key": "appCashWay",
+                "type": "string[]",
+                "label": "Monetization",
+                "options": [{"code": k, "name": v} for k, v in APP_CASH_WAY_OPTIONS.items()],
+                "notes": [],
+            },
+            {
+                "key": "videoTime",
+                "type": "int",
+                "label": "Video duration",
+                "options": [{"code": k, "name": v} for k, v in VIDEO_TIME_OPTIONS.items()],
+                "notes": ["A bucket, not seconds."],
+            },
+            {
+                "key": "materialRatio",
+                "type": "string[]",
+                "label": "Aspect ratio",
+                "options": [
+                    {"code": r, "name": r, "group": g} for g, rs in MATERIAL_RATIO_OPTIONS.items() for r in rs
+                ],
+                "notes": [],
+            },
+            {
+                "key": "asrLanguage",
+                "type": "string",
+                "label": "Voiceover language",
+                "options": [{"code": c, "name": LANGUAGE_OPTIONS.get(c, c)} for c in ASR_LANGUAGES],
+                "notes": ["Shorter list than `language` — 25 versus 32."],
+            },
+            {
+                "key": "minDuration",
+                "type": "int",
+                "label": "Ad days, minimum",
+                "notes": ["Days the ad has been running, not video length."],
+            },
+            {"key": "maxDuration", "type": "int", "label": "Ad days, maximum", "notes": []},
+            {
+                "key": "ageRange",
+                "type": "string[]",
+                "label": "Target age",
+                "notes": [],
+            },
+            {
                 "key": "searchDsl",
                 "type": "object[]",
                 "notes": [
@@ -285,6 +634,19 @@ def build(session: Session) -> Dict[str, Any]:
                 ],
             },
         ],
+        "flags": {
+            "type": "int",
+            "note": "Send 1 to enable. Absent means no constraint.",
+            "options": [{"key": k, "name": v} for k, v in BOOLEAN_FLAGS.items()],
+        },
+        "search_dsl_keys": SEARCH_DSL_KEYS,
+        "material_types": MATERIAL_TYPES,
+        "purpose_unavailable": PURPOSE_UNAVAILABLE,
+        "url_only_params": {
+            "note": "Present in the web UI's URL but NOT variables of the GraphQL document. "
+            "Sending them in `filters` does nothing — no error, no effect.",
+            "params": URL_ONLY_PARAMS,
+        },
         "rejected_keys": {
             "keys": ["page", "order"],
             "note": "The worker owns paging and ordering; sending them inside `filters` is a 422 because "

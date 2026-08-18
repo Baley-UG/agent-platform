@@ -133,62 +133,35 @@ takes it to 198 422 085, so TikTok is 2.1% of the union — and page 1 under
 the newest 50 of 198M simply belong to the big networks. To see a specific
 network, filter to it alone.
 
-## What the three `purpose` values actually are
+## `purpose` — the product's top tabs
 
-`purpose` is a required `Int!` upstream and only 1, 2 and 3 are accepted — 4
-and up fail with "Parameter error". **This service fills it in.** A job that
-omits `purpose` gets `AD_DEFAULT_PURPOSE` (2), so no caller has to carry the
-constant and no form needs a control for it; passing an explicit value still
-wins, because pinning a default must not remove an upstream capability.
+Read out of the web app's own Vue source, so this is the definition rather
+than an inference:
 
-The upstream never says what the three mean, so the rest of this section is
-measured.
+```
+purposeEnum = {"Game": 1, "App": 2, "Website": 3, "Ec": 4, "Account": 5, "Domestic": 6}
+```
 
-**They are not nested.** Same narrow filter (TikTok, TR, all dates) answers
-1 430 403 / 1 954 500 / 1 665 581 for 1 / 2 / 3 — three is smaller than two,
-so a higher number is not a wider net. Page 1 of a fixed filter under each
-purpose returns near-disjoint id sets (1 shared row out of ~50), so these are
-genuinely different creative pools, not one pool reordered.
+| Value | Tab | Available to us |
+| - | - | - |
+| 1 | Game | yes |
+| 2 | App | yes — `AD_DEFAULT_PURPOSE` |
+| 3 | Website | yes |
+| 4 | Ec (e-commerce) | no — hidden in the UI, refused with `00:401001` |
+| 5 | Account | no — hidden in the UI, refused with `00:401001` |
+| 6 | Mainland China games | accepted, but answers `total: 0` here |
 
-**`purpose` is a gradient from in-app inventory toward web/display
-inventory.** The evidence is the corpus size the upstream reports per
-network, which is a server-side count over the whole pool rather than a
-sample of it:
+This corrects an earlier reading in these docs. Probing corpus sizes had
+suggested "a gradient from in-app inventory toward web/display", which
+described the *effect* and missed the cause: they are advertiser verticals.
+The measurements still hold and now make sense — game ad networks peak under
+Game (AdColony 8 732 rows versus 48 under Website; Unity Ads 2 747 539) and
+display peaks under Website (AdSense 28 342, X 304 137) because those are the
+networks each vertical buys.
 
-| Network | purpose 1 | purpose 2 | purpose 3 |
-| - | - | - | - |
-| Unity Ads (in-app, games) | **2 747 539** | 2 434 788 | 2 035 918 |
-| AdColony (in-app) | **8 732** | 5 808 | 48 |
-| AdSense (web display) | 1 007 | 27 744 | **28 342** |
-| X (social/web) | 19 299 | 157 688 | **304 137** |
-| TikTok (mixed) | 1 829 634 | 4 244 227 | **6 042 953** |
-
-In-app networks peak at 1 and fall away toward 3 — AdColony by 180x. Web and
-social networks do the exact opposite, AdSense rising 28x from 1 to 3. The
-gradient runs in both directions on the same axis, which is what makes it a
-real property of `purpose` rather than a size artefact.
-
-Advertiser mix points the same way. Sampling 400 rows of each corpus,
-`campaign[].__typename` is 95% AppBrand under 1, 91% under 2, and flips to
-62% Website under 3.
-
-### Be careful with the sample-based numbers
-
-Those percentages are the **newest** 400 creatives (`max_dt_desc`) on a live
-feed, and they move. An earlier sample of the same three corpora put the
-Website share at 18% / 42% / 57% instead of 4.6% / 8.6% / 61.8%. Only the
-ordering survived both runs — Website share rises 1 → 2 → 3 every time, but
-the magnitudes are not stable enough to quote as facts.
-
-The same caveat killed an earlier claim of ours: that Playlet advertisers
-concentrate under `purpose: 3`. One sample showed 8 of them there and none
-under 1; a larger, equal-depth sample found **zero Playlet under all three**.
-Playlet is simply rare among recent creatives, and the first result was
-noise. Do not build a filter or a UI affordance on it.
-
-Prefer the `total` a filter reports over anything counted from a page. Totals
-are the upstream's own count across the whole corpus; a page is a recency
-window that changes under you.
+Two consequences worth knowing: under Website the UI narrows its media list
+to 18 (game networks are hidden), and `format` 302 Rewarded / 401 Playable
+only exist under purpose 1-4.
 
 ## The pagination ceiling — read this before writing a filter
 
@@ -455,6 +428,32 @@ guessed — every name came back from a live payload.
 `media` also carries `valid_codes`: the complete accepted set including codes
 whose names we have never seen. A panel must not offer anything outside it,
 because one invalid code fails the whole upstream request.
+
+The vocabularies come from two places now. Facet values still merge observed
+data over a seed, but the enumerations the upstream never returns in a
+payload — `format`, `creativeType`, `order`, `language`, `category`,
+`campaignType`, `appCashWay`, `videoTime`, `materialRatio`, `asrLanguage`,
+the boolean flags and the `searchDsl` keys — were read out of the web app's
+own source and live in `app/services/filter_schema.py`.
+
+That file also records two things a caller cannot discover by trying:
+
+* **`url_only_params`** — keys that appear in the web UI's URL but are NOT
+  variables of the GraphQL document. `daterange` is the trap: it looks like a
+  filter, and sending it does nothing at all. It is UI sugar that compiles to
+  `startDate`/`endDate`.
+* **`material_types`** — the full map for `material.type`. Our docs used to
+  say "102 image, 202 video", which silently mislabels 201 Video, 203
+  Fullscreen Video, 103 Animated Image, 104 Multiple Image, 105 Carousel and
+  301 Html.
+
+`media` options now carry a `category` (Social Media / Ad Networks / Local
+Media) and the endpoint serves the UI's one-click groups as `presets`:
+Meta Ads `[2,1,10,16,32]`, Google Ads `[4,11,21]`, TikTok for Business
+`[13,23,18]`.
+
+Our GraphQL document is at parity with the web app's — 59 variables, none
+missing on either side.
 
 ## Reading the data
 
