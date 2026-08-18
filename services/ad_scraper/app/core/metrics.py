@@ -6,7 +6,10 @@ the mirror service as the milestones land.
 """
 
 from fastapi import FastAPI
-from prometheus_client import Counter, Gauge, Histogram
+
+from app.core.config import settings
+from app.core.logging import logger
+from prometheus_client import Counter, Gauge, Histogram, start_http_server
 from starlette.requests import Request
 from starlette.routing import Match
 from starlette_prometheus import PrometheusMiddleware, metrics
@@ -125,3 +128,28 @@ def setup_metrics(app: FastAPI) -> None:
     """Mount Prometheus middleware and the /metrics endpoint."""
     app.add_middleware(SafePrometheusMiddleware)
     app.add_route("/metrics", metrics)
+
+
+def start_worker_metrics_server() -> bool:
+    """Expose this process's counters over HTTP. Returns True when listening.
+
+    The worker has no ASGI app, so `setup_metrics` does not apply to it — yet
+    it is the process that fetches pages, hits rate limits and waits at the
+    throttle. Scraping only the API process reports 0 for all of those
+    forever, which reads as "nothing is happening" rather than "nobody is
+    looking".
+
+    Never fatal. A port clash (two workers on one host, or a `replicas: 2`
+    scale-up) must degrade to no metrics, not to no ingestion.
+    """
+    port = settings.AD_WORKER_METRICS_PORT
+    if port <= 0:
+        logger.info("ad_worker_metrics_disabled")
+        return False
+    try:
+        start_http_server(port)
+    except OSError as exc:
+        logger.warning("ad_worker_metrics_bind_failed", port=port, error=str(exc))
+        return False
+    logger.info("ad_worker_metrics_listening", port=port)
+    return True

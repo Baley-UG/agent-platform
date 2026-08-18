@@ -39,7 +39,7 @@ from typing import Any, Dict, Optional
 
 from app.core.config import settings
 from app.core.logging import logger
-from app.core.metrics import ad_job_duration_seconds
+from app.core.metrics import ad_job_duration_seconds, start_worker_metrics_server
 from app.services import credentials as creds
 from app.services import ingest, jobs
 from app.services.database import session_scope
@@ -197,6 +197,10 @@ async def main() -> None:
     """Process entry point."""
     shutdown = asyncio.Event()
     _install_signal_handlers(shutdown)
+
+    # Before anything else: this process owns the interesting counters, and
+    # an unscraped counter is indistinguishable from a broken one.
+    start_worker_metrics_server()
 
     concurrency = max(1, settings.AD_WORKER_CONCURRENCY)
     logger.info(

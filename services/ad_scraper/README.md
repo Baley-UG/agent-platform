@@ -421,6 +421,11 @@ that asked for less. Waiting in place is strictly cheaper.
 | `AD_API_RATE_LIMIT_MAX_RETRIES` | 5 | The rate limit's own retry budget |
 | `AD_API_JITTER_RATIO` | 0.25 | Added, never subtracted — separate containers share no state |
 
+These counters live in the **worker** process, not the API's — the worker
+is what fetches pages. Scrape `ad-scraper-worker:9103/metrics`
+(`AD_WORKER_METRICS_PORT`); the API's own `/metrics` reports 0 for all of
+them forever, because nothing there ever increments them.
+
 Metrics to watch: `ad_throttle_wait_seconds_total` rising while
 `ad_rate_limited_total` stays flat means the pacing is working. Both rising
 means the floor is too small for this account — raise
