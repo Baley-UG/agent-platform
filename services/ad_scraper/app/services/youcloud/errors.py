@@ -40,7 +40,20 @@ from typing import Any, Optional
 
 # `extensions.c` family prefixes.
 _SESSION_FAMILY = "05:"
+
+# `00:403001` — "Permission denied, please upgrade your plan". The message is
+# misleading: it fires for an unauthenticated request AND for a query whose
+# `operationName` the endpoint does not recognise. Measured — the exact same
+# query and cookie succeeds as `materialList` and gets this error as `p` or
+# `foo`. So a caller inventing an operation name gets sent to debug their
+# subscription. Ours are pinned in `queries.py`; don't improvise new ones.
 _PLAN_DENIED_CODE = "00:403001"
+
+# `00:400998` — the rate limiter. Retryable, and worth its own class so it
+# reads as "we went too fast" in logs and metrics instead of landing in the
+# unknown-error bucket.
+_RATE_LIMIT_CODE = "00:400998"
+_RATE_LIMIT_FRAGMENT = "high visiting frequency"
 
 # The platform sends no distinguishing code for these two, only a
 # sentence. Matched case-insensitively on a fragment, so minor wording
@@ -96,6 +109,14 @@ class TransientError(YouCloudError):
     """Server-side hiccup ("The system is busy"). Retry with backoff."""
 
 
+class RateLimited(TransientError):
+    """`00:400998` — "High visiting frequency, please try again later".
+
+    A subclass of `TransientError` so the existing retry-with-backoff path
+    applies unchanged; the distinct type only makes the cause legible.
+    """
+
+
 class TransportError(YouCloudError):
     """Network failure, timeout, non-JSON body, or an unexpected status.
 
@@ -141,6 +162,8 @@ def classify(payload: Any) -> Optional[YouCloudError]:
 
     if code and code.startswith(_SESSION_FAMILY):
         return AuthExpired(message, **kwargs)
+    if code == _RATE_LIMIT_CODE or _RATE_LIMIT_FRAGMENT in lowered:
+        return RateLimited(message, **kwargs)
     if code == _PLAN_DENIED_CODE:
         return PlanDenied(message, **kwargs)
     if _BAD_FILTER_FRAGMENT in lowered:
