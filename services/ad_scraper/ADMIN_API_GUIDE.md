@@ -263,6 +263,77 @@ them in. The panel does not need to model them all — a form covering
 `purpose`, `media`, `area`, `keyword`, `startDate`/`endDate` plus a raw-JSON
 escape hatch covers real use.
 
+### The `filters` contract
+
+`filters` is the upstream GraphQL `variables` object, forwarded verbatim. Only
+**`purpose` is required** — omitting it fails validation upstream. Everything
+else is optional.
+
+`purpose` selects the corpus and only **1, 2, 3** are valid (4+ is a parameter
+error). The Meta family is densest under 3; 2 carries the AdMob/YouTube/Unity
+side; TikTok answers under both.
+
+**Strict fields — one bad value fails the WHOLE request.** The upstream never
+ignores a bad code; it answers *"Parameter error, please clear the filter and
+refresh"* with no indication which field was wrong. `POST /jobs` therefore
+validates these up front and returns a 422 naming the problem:
+
+| Field | Format | Rejected examples |
+| - | - | - |
+| `area` | **uppercase ISO-3166-1 alpha-2, one code per array element** | `"tr"` (lowercase) · `"TUR"` (ISO-3) · `""` · **`"TR;SA"` / `"TR,SA"` (two codes joined into one element)** |
+| `media`, `platform`, `format`, `creativeType`, `resourceElement`, `category` | array of positive integers | `["13"]` (string) · `[0]` · unknown codes (forwarded, and the upstream rejects them) |
+
+That `"TR;SA"` row is not hypothetical — a panel whose country multi-select
+string-joins its value produces exactly it, and the upstream error gives no
+hint. Send `["US", "TR", "SA"]`.
+
+Valid code values come from `GET /dimensions?kind=…`; they are discovered from
+ingested data, so a fresh database lists none. For reference, `media` spans
+1-19, 21-23, 25-26, 28-31, 33-34 today.
+
+**Dates.** `isAllDate: 1` **overrides** `startDate`/`endDate` — sending both
+is accepted upstream and silently ignores the range (measured: identical
+totals either way). `POST /jobs` refuses the combination rather than let a
+date filter vanish. An inverted range (`startDate > endDate`) is also accepted
+upstream and returns a nonsense subset, so it is refused too. Dates are
+`YYYY-MM-DD`; any other shape fails upstream validation.
+
+With neither `isAllDate` nor a range you get the upstream's own default recent
+window, which is much smaller than the full corpus (18M vs 205M on
+`purpose: 2`) — so omitting both is a filter, not "everything".
+
+**Lenient fields — a bad value silently returns nothing.** No validation can
+help here; treat an empty result as possibly-your-filter:
+
+| Field | Behaviour |
+| - | - |
+| `gender` | an unknown code returns `total: 0` rather than erroring (observed values 1, 2, 3) |
+| `keyword` | free text; combine with `field` (`"all"`) and `accurateSearch` (`1`) |
+| `campaign` | a numeric store id returns `total: 0` — use the `app_id` field instead (`POST /jobs` refuses a numeric `campaign` for this reason) |
+
+`field` and `accurateSearch` are **optional**, despite appearing in every
+example copied out of the web UI's network tab.
+
+A minimal working filter:
+
+```json
+{"purpose": 2}
+```
+
+A realistic one:
+
+```json
+{
+  "purpose": 2,
+  "media": [13],
+  "area": ["TR", "US"],
+  "startDate": "2026-02-20",
+  "endDate": "2026-08-18",
+  "field": "all",
+  "accurateSearch": 1
+}
+```
+
 Fields the panel owns:
 
 | Field | Notes |

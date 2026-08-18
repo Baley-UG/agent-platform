@@ -197,6 +197,91 @@ class TestJobCreateValidation:
 
         assert "searchDsl" not in JobCreate(filters={"purpose": 2}).filters
 
+    @pytest.mark.parametrize(
+        "bad_area",
+        ["TR;SA", "TR,SA", "TR|SA", "tr", "TUR", "", "T", "TRX"],
+    )
+    def test_rejects_malformed_country_codes(self, bad_area):
+        """A single bad `area` value fails the WHOLE upstream request with a
+        bare "Parameter error" naming no field. `"TR;SA"` is what a panel that
+        string-joins its country multi-select actually sends."""
+        from app.schemas.jobs import JobCreate
+
+        with pytest.raises(ValueError) as info:
+            JobCreate(filters={"purpose": 2, "area": ["US", bad_area]})
+        assert "filters.area" in str(info.value)
+
+    def test_joined_country_code_suggests_the_split(self):
+        from app.schemas.jobs import JobCreate
+
+        with pytest.raises(ValueError) as info:
+            JobCreate(filters={"purpose": 2, "area": ["TR;SA"]})
+        assert "['TR', 'SA']" in str(info.value)
+
+    def test_lowercase_country_code_suggests_uppercase(self):
+        from app.schemas.jobs import JobCreate
+
+        with pytest.raises(ValueError) as info:
+            JobCreate(filters={"purpose": 2, "area": ["tr"]})
+        assert "'TR'" in str(info.value)
+
+    def test_accepts_well_formed_country_codes(self):
+        from app.schemas.jobs import JobCreate
+
+        assert JobCreate(filters={"purpose": 2, "area": ["US", "TR", "SA"]}).filters["area"] == ["US", "TR", "SA"]
+
+    @pytest.mark.parametrize("key", ["media", "platform", "format", "creativeType"])
+    def test_rejects_string_codes_in_int_arrays(self, key):
+        from app.schemas.jobs import JobCreate
+
+        with pytest.raises(ValueError) as info:
+            JobCreate(filters={"purpose": 2, key: ["13"]})
+        assert f"filters.{key}" in str(info.value)
+
+    def test_rejects_is_all_date_together_with_a_range(self):
+        """`isAllDate` silently overrides the range upstream — measured as
+        identical totals either way — so a date filter would vanish."""
+        from app.schemas.jobs import JobCreate
+
+        with pytest.raises(ValueError) as info:
+            JobCreate(filters={"purpose": 2, "isAllDate": 1, "startDate": "2026-01-01", "endDate": "2026-08-18"})
+        assert "isAllDate" in str(info.value)
+
+    def test_allows_is_all_date_alone(self):
+        from app.schemas.jobs import JobCreate
+
+        assert JobCreate(filters={"purpose": 2, "isAllDate": 1}).filters["isAllDate"] == 1
+
+    def test_allows_a_range_without_is_all_date(self):
+        from app.schemas.jobs import JobCreate
+
+        assert JobCreate(filters={"purpose": 2, "startDate": "2026-01-01", "endDate": "2026-08-18"})
+
+    def test_rejects_an_inverted_date_range(self):
+        from app.schemas.jobs import JobCreate
+
+        with pytest.raises(ValueError) as info:
+            JobCreate(filters={"purpose": 2, "startDate": "2026-08-18", "endDate": "2026-01-01"})
+        assert "after endDate" in str(info.value)
+
+    def test_the_exact_filter_a_panel_sent_is_refused_with_guidance(self):
+        """Regression: this JSON reached the upstream and came back as a bare
+        parameter error with no clue which field was wrong."""
+        from app.schemas.jobs import JobCreate
+
+        with pytest.raises(ValueError) as info:
+            JobCreate(
+                filters={
+                    "area": ["US", "TR;SA"],
+                    "endDate": "2026-08-18",
+                    "purpose": 2,
+                    "searchDsl": [{"key": "appid", "type": "equal", "value": "1661308505"}],
+                    "startDate": "2026-01-01",
+                }
+            )
+        message = str(info.value)
+        assert "TR;SA" in message and "one code per array element" in message
+
     def test_passes_arbitrary_filters_through(self):
         from app.schemas.jobs import JobCreate
 

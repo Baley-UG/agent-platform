@@ -280,6 +280,32 @@ curl -s http://localhost:8083/api/v1/jobs/<job_id> -H "X-API-Key: $AD_SCRAPER_AP
 }
 ```
 
+## Filter values the upstream rejects outright
+
+`filters` is forwarded verbatim and only `purpose` is required. But the
+upstream validates several fields strictly — **one bad value fails the whole
+request** with a bare *"Parameter error, please clear the filter and
+refresh"*, so `POST /jobs` checks them first and returns a 422 that says
+what's wrong:
+
+* **`area`** — uppercase ISO-2, **one code per array element**. `["TR;SA"]`,
+  `["tr"]`, `["TUR"]` are all rejected upstream. A panel that string-joins a
+  country multi-select produces the first one; send `["TR", "SA"]`.
+* **`media` / `platform` / `format` / `creativeType` / `resourceElement` /
+  `category`** — arrays of positive integers, not strings.
+* **`isAllDate` + `startDate`/`endDate` together** — `isAllDate` silently
+  overrides the range upstream, so the combination is refused here rather
+  than letting a date filter vanish.
+* **`startDate` after `endDate`** — accepted upstream, returns nonsense.
+
+Silent-zero cases no validation can catch: an unknown `gender` code returns
+`total: 0`, and a numeric `campaign` does too (use `app_id`). `field` and
+`accurateSearch` are optional despite showing up in every UI-copied example.
+
+With neither `isAllDate` nor a date range you get the upstream's default
+recent window — 18M rows on `purpose: 2` versus 205M with `isAllDate: 1`. So
+omitting both is a filter, not "everything".
+
 ## Reading the data
 
 ```
