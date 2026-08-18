@@ -271,6 +271,48 @@ How to use each part:
 The endpoint is a plain read with no auth beyond the usual gateway JWT, so
 fetch it once on mount and cache it for the session.
 
+**What the endpoint now carries beyond facet values.** The enumerations the
+upstream never returns in a payload were read out of the web app's own source,
+so you get them without probing:
+
+| Key | Count | Note |
+| - | - | - |
+| `format` | 8 | Banner, Interstitial, Native, In-Feed, Floating, In-Stream Video, Rewarded, Playable |
+| `creativeType` | 8 | 201/202/203 video, 102/103/104 image, 301 Html, 105 Carousel |
+| `language` | 32 | ad language |
+| `asrLanguage` | 25 | voiceover language — a shorter list than `language` |
+| `category` | 21 | store category |
+| `campaignType` | 5 | App Store, Google Play, APK, RuStore, Galaxy Store |
+| `appCashWay` | 3 | iap / iaa / iaa_iap |
+| `videoTime` | 5 | buckets, not seconds |
+| `materialRatio` | 15 | grouped Horizontal / Vertical / Square |
+| `job.order` | 9 | includes the ascending variants (`max_dt`, `cnt_dt`) |
+
+Plus four top-level blocks:
+
+* **`flags`** — 11 single-value toggles (`isNew`, `resolution`, `asr`,
+  `isViolation`, `hasPpid`, `postpage`, `hasCooperate`, `isCreative`, `isPre`,
+  `isNewAd`, `singleArea`). Send `1` to enable; absent means no constraint.
+* **`search_dsl_keys`** — the six `searchDsl` keys with the comparison types
+  each accepts: `appid` (equal/notEqual), `campaign_name`, `slogan`, `asr`,
+  `brands_name`, `developer_name` (contain/exclude). Multiple terms are joined
+  with `/` inside one `value`, up to five.
+* **`material_types`** — the full display map for `material.type`. Our older
+  guidance said "102 image, 202 video", which mislabels 201 Video, 203
+  Fullscreen Video, 103 Animated Image, 104 Multiple Image, 105 Carousel and
+  301 Html.
+* **`url_only_params`** — keys that live in the web UI's URL but are **not**
+  GraphQL variables, so putting them in `filters` does nothing: no error, no
+  effect. `daterange` is the one you will reach for; it is UI sugar for a
+  relative window, so send `startDate`/`endDate` instead. `advanced` is the
+  URL's name for `searchDsl`.
+
+`media` options also carry a `category` (Social Media / Ad Networks / Local
+Media) for a sectioned picker, and the endpoint serves the UI's one-click
+groups as `presets`: **Meta Ads** `[2,1,10,16,32]`, **Google Ads**
+`[4,11,21]`, **TikTok for Business** `[13,23,18]`. Those are worth mirroring —
+a user reaching for "Meta Ads" should not have to know it means five codes.
+
 ### `GET /ad-scraper/dimensions?kind=area`
 
 Feeds the filter dropdowns. Returns `{kind, code, name, icon, parent_code,
@@ -390,30 +432,18 @@ whenever a job omits it — `GET /filters` reports that value as
 Everything else, `field` and `accurateSearch` included, is optional despite
 appearing in every example copied out of the web UI's network tab.
 
-`purpose` selects the corpus and only **1, 2, 3** are valid (4+ is a parameter
-error). They are **not nested** — the same TikTok/TR filter answers 1 430 403 /
-1 954 500 / 1 665 581 for 1 / 2 / 3 — and page 1 of a fixed filter returns
-near-disjoint ids across them, so they are different pools rather than one
-pool reordered.
+`purpose` is the product's **top tab**, read out of the web app's own source:
+`{"Game":1,"App":2,"Website":3,"Ec":4,"Account":5,"Domestic":6}`. Only 1-3 are
+usable here — 4 and 5 are refused with `00:401001` and 6 answers zero rows.
 
-`purpose` runs as a **gradient from in-app inventory to web/display
-inventory**. Measured by the corpus size the upstream reports per network
-(a server-side count, not a sample):
+**The panel does not need a control for it.** The service fills in
+`AD_DEFAULT_PURPOSE` (2 = App) when a job omits the key, and `GET /filters`
+reports that as `default` with `required: false`. Send it only to override —
+1 for game advertisers, 3 for websites.
 
-| Network | purpose 1 | purpose 2 | purpose 3 |
-| - | - | - | - |
-| Unity Ads (in-app) | **2 747 539** | 2 434 788 | 2 035 918 |
-| AdColony (in-app) | **8 732** | 5 808 | 48 |
-| AdSense (web display) | 1 007 | 27 744 | **28 342** |
-| X (social/web) | 19 299 | 157 688 | **304 137** |
-
-Label the dropdown for that gradient:
-
-| Value | Offer it as |
-| - | - |
-| 1 | App advertisers — in-app networks |
-| 2 | Broader mix — in-app plus display |
-| 3 | Web, social and display |
+Two knock-on effects: under Website the UI narrows its network list to 18
+(game networks are hidden), and `format` 302 Rewarded / 401 Playable exist
+only under purpose 1-4.
 
 Advertiser mix agrees (95% / 91% AppBrand under 1 and 2, flipping to 62%
 Website under 3) but those are counted from the newest 400 rows of a live

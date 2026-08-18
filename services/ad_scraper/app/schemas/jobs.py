@@ -29,9 +29,13 @@ from app.core.config import settings
 #   impression_inc_2y_desc   highest 2-year impressions first
 KNOWN_ORDERS: tuple[str, ...] = (
     "max_dt_desc",
-    "impression_inc_2y_desc",
+    "max_dt",
     "min_dt_desc",
-    "duration_desc",
+    "min_dt",
+    "cnt_dt_desc",
+    "cnt_dt",
+    "cnt_ad_id_desc",
+    "impression_inc_2y_desc",
     "similar_cnt_desc",
 )
 

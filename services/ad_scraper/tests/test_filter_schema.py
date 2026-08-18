@@ -63,10 +63,21 @@ class TestSeeds:
     def test_purpose_has_exactly_three(self):
         assert [o["code"] for o in PURPOSE_OPTIONS] == [1, 2, 3]
 
-    def test_purpose_one_is_labelled_as_the_app_corpus(self):
-        """It was the unlabelled option in the panel, and it is the corpus
-        this service exists to browse."""
-        assert "App" in PURPOSE_OPTIONS[0]["name"]
+    def test_purpose_names_match_the_upstream_enum(self):
+        """Read out of the web app's own `purposeEnum`
+        ({"Game":1,"App":2,"Website":3,...}) — not inferred. An earlier
+        version of this file guessed "App advertisers / Broader mix / Web,
+        social and display" from corpus sizes, which described the effect
+        rather than the thing."""
+        assert [o["name"] for o in PURPOSE_OPTIONS] == ["Game", "App", "Website"]
+
+    def test_unavailable_purposes_are_recorded_not_offered(self):
+        """4 and 5 are refused for this account, 6 answers zero rows. Kept out
+        of the options, kept in the record so nobody re-probes them."""
+        from app.services.filter_schema import PURPOSE_UNAVAILABLE
+
+        assert set(PURPOSE_UNAVAILABLE) == {4, 5, 6}
+        assert not set(PURPOSE_UNAVAILABLE) & {o["code"] for o in PURPOSE_OPTIONS}
 
 
 class TestMerge:
@@ -136,3 +147,63 @@ class TestDefaultPurpose:
         from app.services.filter_schema import PURPOSE_OPTIONS
 
         assert settings.AD_DEFAULT_PURPOSE in [o["code"] for o in PURPOSE_OPTIONS]
+
+
+class TestUpstreamVocabularies:
+    """Values taken from the web app's own source, not guessed.
+
+    The whole reason these live here is that guessing them produced two wrong
+    facts already: `purpose` described as a gradient, and `type` documented as
+    only "102 image / 202 video".
+    """
+
+    def test_material_types_cover_more_than_image_and_video(self):
+        from app.services.filter_schema import MATERIAL_TYPES
+
+        # The pair our docs used to claim was the whole story...
+        assert MATERIAL_TYPES["102"] == "Image"
+        assert MATERIAL_TYPES["202"] == "Vertical Video"
+        # ...and the ones they silently mislabelled.
+        for code in ("100", "101", "103", "104", "105", "106", "201", "203", "301"):
+            assert code in MATERIAL_TYPES
+
+    def test_media_presets_match_the_ui_buttons(self):
+        from app.services.filter_schema import MEDIA_PRESETS
+
+        by_name = {p["name"]: p["media"] for p in MEDIA_PRESETS}
+        assert by_name["Meta Ads"] == [2, 1, 10, 16, 32]
+        assert by_name["Google Ads"] == [4, 11, 21]
+        assert by_name["TikTok for Business"] == [13, 23, 18]
+
+    def test_every_preset_code_is_valid(self):
+        from app.services.filter_schema import MEDIA_PRESETS, MEDIA_VALID_CODES
+
+        for preset in MEDIA_PRESETS:
+            bad = [c for c in preset["media"] if c not in MEDIA_VALID_CODES]
+            assert bad == [], f"{preset['name']} offers unusable codes: {bad}"
+
+    def test_every_categorised_network_is_a_valid_code(self):
+        from app.services.filter_schema import MEDIA_CATEGORY, MEDIA_VALID_CODES
+
+        bad = sorted(int(c) for c in MEDIA_CATEGORY if int(c) not in MEDIA_VALID_CODES)
+        assert bad == []
+
+    def test_url_only_params_are_not_offered_as_filters(self):
+        """`daterange` is the trap: it looks like a filter, reaches the
+        GraphQL document as an undeclared variable, and is ignored."""
+        from app.services.filter_schema import URL_ONLY_PARAMS
+
+        assert "daterange" in URL_ONLY_PARAMS
+        assert "advanced" in URL_ONLY_PARAMS
+
+    def test_asr_languages_are_a_subset_of_ad_languages(self):
+        from app.services.filter_schema import ASR_LANGUAGES, LANGUAGE_OPTIONS
+
+        missing = [c for c in ASR_LANGUAGES if c not in LANGUAGE_OPTIONS]
+        assert missing == [], f"voiceover languages with no label: {missing}"
+
+    def test_known_orders_carry_the_ascending_variants(self):
+        from app.schemas.jobs import KNOWN_ORDERS
+
+        assert "max_dt" in KNOWN_ORDERS and "cnt_dt" in KNOWN_ORDERS
+        assert "cnt_ad_id_desc" in KNOWN_ORDERS
