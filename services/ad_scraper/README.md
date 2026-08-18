@@ -71,26 +71,50 @@ worth: Instagram 215M, Facebook 212M, Messenger 163M, Facebook FAN 161M,
 AdMob 51M, YouTube 21M, **TikTok 6.0M**, Pinterest 1.7M, Yandex 1.0M,
 VKontakte 0.67M, Snapchat 9k, X 0.3M.
 
-Valid `media` codes are 1-19, 21-23, 25-26, 28-31, 33-34. An invalid code
+Valid `media` codes are **1-19, 21-23, 25-26, 28-34** — 20, 24, 27, 35 and 36 are
+rejected. An invalid code
 does **not** get ignored — it fails the whole request with
 `"Parameter error, please clear the filter and refresh"`.
 
-Codes observed so far, with the corpus each one reports under `purpose: 2`,
-all dates:
+All 31 codes, each name read back from a live payload (never guessed), and
+served to the panel by `GET /api/v1/filters`:
 
-| Code | Network | | Code | Network |
-| - | - | - | - | - |
-| 1 | Instagram | | 13 | **TikTok** (4 244 227) |
-| 2 | Facebook | | 16 | Messenger |
-| 4 | AdMob | | 21 | AdSense (27 744 — tiny) |
-| 5 | Unity Ads | | 22 | Mintegral |
-| 6 | ironSource | | 23 | Pangle |
-| 8 | AppLovin | | 26 | Moloco |
-| 9 | Vungle | | 28 | Kwai |
-| 10 | Facebook (FAN) | | 30 | Yandex |
-| 11 | YouTube | | 32 | Threads |
-| 12 | Chartboost | | 33 | Bigo Ads |
-| | | | 34 | InMobi |
+| Code | Network |
+| - | - |
+| 1 | Instagram |
+| 2 | Facebook |
+| 3 | X |
+| 4 | AdMob |
+| 5 | Unity Ads |
+| 6 | ironSource |
+| 7 | AdColony |
+| 8 | AppLovin |
+| 9 | Vungle |
+| 10 | Facebook (FAN) |
+| 11 | YouTube |
+| 12 | Chartboost |
+| 13 | TikTok |
+| 14 | Yahoo Japan |
+| 15 | Line Japan |
+| 16 | Messenger |
+| 17 | Pinterest |
+| 18 | TopBuzz Japan |
+| 19 | SmartNews Japan |
+| 21 | AdSense |
+| 22 | Mintegral |
+| 23 | Pangle |
+| 25 | Snapchat |
+| 26 | Moloco |
+| 28 | Kwai |
+| 29 | SnackVideo |
+| 30 | Yandex |
+| 31 | VKontakte |
+| 32 | Threads |
+| 33 | Bigo Ads |
+| 34 | InMobi |
+
+`GET /filters` merges these with what we have actually ingested, so each
+option also carries a usage count and a `source` of `observed` or `seed`.
 
 ### Two things about `media` that look like bugs
 
@@ -405,6 +429,26 @@ Silent-zero cases no validation can catch: an unknown `gender` code returns
 With neither `isAllDate` nor a date range you get the upstream's default
 recent window — 18M rows on `purpose: 2` versus 205M with `isAllDate: 1`. So
 omitting both is a filter, not "everything".
+
+## `GET /filters` — the vocabulary, served
+
+The filter vocabulary used to live in two places: a hand-written option list
+in the panel and the measured truth here. They drifted, and the drift was not
+symmetric — the panel was missing nine networks (ironSource, Vungle,
+Chartboost, AdSense, Mintegral, Pangle, Moloco, Bigo, InMobi) while asserting
+four it had guessed at. Three of those guesses later measured correct, which
+is the worst case: a list that is right often enough to be trusted.
+
+`GET /api/v1/filters` returns every filter a job can carry with its options
+and constraints, assembled from two sources: the facet values we have
+actually ingested (with usage counts) merged over a small measured seed in
+`app/services/filter_schema.py`, so a fresh database still yields a usable
+form. Observed values win; a seed only fills a gap. Nothing in the seed is
+guessed — every name came back from a live payload.
+
+`media` also carries `valid_codes`: the complete accepted set including codes
+whose names we have never seen. A panel must not offer anything outside it,
+because one invalid code fails the whole upstream request.
 
 ## Reading the data
 
