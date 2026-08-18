@@ -135,9 +135,14 @@ network, filter to it alone.
 
 ## What the three `purpose` values actually are
 
-`purpose` is a required `Int!` and only 1, 2 and 3 are accepted — 4 and up
-fail with "Parameter error". The upstream never says what they mean, so this
-is measured.
+`purpose` is a required `Int!` upstream and only 1, 2 and 3 are accepted — 4
+and up fail with "Parameter error". **This service fills it in.** A job that
+omits `purpose` gets `AD_DEFAULT_PURPOSE` (2), so no caller has to carry the
+constant and no form needs a control for it; passing an explicit value still
+wins, because pinning a default must not remove an upstream capability.
+
+The upstream never says what the three mean, so the rest of this section is
+measured.
 
 **They are not nested.** Same narrow filter (TikTok, TR, all dates) answers
 1 430 403 / 1 954 500 / 1 665 581 for 1 / 2 / 3 — three is smaller than two,

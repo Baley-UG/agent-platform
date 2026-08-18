@@ -171,6 +171,11 @@ class Settings(BaseSettings):
     AD_MAX_PAGE: int = Field(default=200)
     AD_PAGE_SIZE: int = Field(default=50)
     AD_DEFAULT_PAGE_TO: int = Field(default=5, description="Default last page when a job omits page_to.")
+    # `purpose` is required by the upstream and there is no sensible "all".
+    # Operators settled on 2 — the middle of the in-app/web gradient — so a
+    # job that omits it gets this rather than a 422. Still overridable per
+    # job: pinning a default must not remove an upstream capability.
+    AD_DEFAULT_PURPOSE: int = Field(default=2, ge=1, le=3)
 
     # ----- Worker -----
     AD_WORKER_CONCURRENCY: int = Field(default=2)

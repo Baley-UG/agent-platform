@@ -383,9 +383,12 @@ escape hatch covers real use.
 ### The `filters` contract
 
 `filters` is the upstream GraphQL `variables` object, forwarded verbatim.
-**`purpose` is the ONLY required key** — omitting it fails validation
-upstream. Everything else, `field` and `accurateSearch` included, is optional
-despite appearing in every example copied out of the web UI's network tab.
+**`purpose` no longer needs a control.** It is required upstream, but the
+service fills in its configured default (`AD_DEFAULT_PURPOSE`, currently 2)
+whenever a job omits it — `GET /filters` reports that value as
+`filters[].default` with `required: false`. Send it only to override.
+Everything else, `field` and `accurateSearch` included, is optional despite
+appearing in every example copied out of the web UI's network tab.
 
 `purpose` selects the corpus and only **1, 2, 3** are valid (4+ is a parameter
 error). They are **not nested** — the same TikTok/TR filter answers 1 430 403 /

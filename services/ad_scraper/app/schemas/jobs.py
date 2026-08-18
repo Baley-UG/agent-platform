@@ -71,9 +71,15 @@ class JobCreate(BaseModel):
 
     filters: Dict[str, Any] = Field(
         default_factory=dict,
+        # Pydantic skips validators on defaults unless asked. Without this a
+        # job posted with no `filters` at all keeps an empty dict and reaches
+        # the upstream with no `purpose`, which is the one case the default
+        # exists to cover.
+        validate_default=True,
         description=(
-            "materialList GraphQL variables, verbatim (purpose, media, area, platform, "
-            "format, keyword, startDate/endDate, isAllDate, accurateSearch, ...). "
+            "materialList GraphQL variables, verbatim (media, area, platform, format, "
+            "keyword, startDate/endDate, isAllDate, accurateSearch, ...). "
+            "`purpose` defaults to AD_DEFAULT_PURPOSE when omitted; pass it to override. "
             "Omit `page` and `order` — those come from page_from/page_to/order."
         ),
     )
@@ -98,6 +104,21 @@ class JobCreate(BaseModel):
         ),
     )
     max_attempts: int = Field(default=3, ge=1, le=10)
+
+    @field_validator("filters")
+    @classmethod
+    def _default_purpose(cls, value: Dict[str, Any]) -> Dict[str, Any]:
+        """Fill in `purpose` when the caller omits it.
+
+        The upstream requires it (`$purpose: Int!`) and offers no "all", so
+        every job needs a value. Rather than making each caller carry a
+        constant, the service supplies `AD_DEFAULT_PURPOSE`. An explicit
+        value always wins — the default is a convenience, not a lock.
+        """
+        value = dict(value or {})
+        if value.get("purpose") is None:
+            value["purpose"] = settings.AD_DEFAULT_PURPOSE
+        return value
 
     @field_validator("filters")
     @classmethod

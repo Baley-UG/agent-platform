@@ -94,3 +94,45 @@ class TestMerge:
         ]
         codes = [o["code"] for o in _merge(observed, {})]
         assert codes == ["3", "1", "2"], "named by usage, then the unnamed one"
+
+
+class TestDefaultPurpose:
+    """`purpose` is pinned to a deployment default so callers need not carry it.
+
+    The upstream requires it (`$purpose: Int!`) and offers no "all", so every
+    job needs a value. Operators settled on one; the service supplies it.
+    Pinning a default must not remove the capability, so an explicit value
+    still wins.
+    """
+
+    def test_filled_in_when_absent(self):
+        from app.core.config import settings
+        from app.schemas.jobs import JobCreate
+
+        assert JobCreate(filters={"media": [13]}).filters["purpose"] == settings.AD_DEFAULT_PURPOSE
+
+    def test_filled_in_when_filters_is_omitted_entirely(self):
+        """Pydantic skips validators on defaults unless told otherwise — this is
+        the case that silently reached the upstream with no purpose."""
+        from app.core.config import settings
+        from app.schemas.jobs import JobCreate
+
+        assert JobCreate().filters == {"purpose": settings.AD_DEFAULT_PURPOSE}
+
+    def test_null_is_treated_as_absent(self):
+        from app.core.config import settings
+        from app.schemas.jobs import JobCreate
+
+        assert JobCreate(filters={"purpose": None}).filters["purpose"] == settings.AD_DEFAULT_PURPOSE
+
+    @pytest.mark.parametrize("explicit", [1, 2, 3])
+    def test_an_explicit_value_always_wins(self, explicit):
+        from app.schemas.jobs import JobCreate
+
+        assert JobCreate(filters={"purpose": explicit}).filters["purpose"] == explicit
+
+    def test_the_default_is_a_valid_purpose(self):
+        from app.core.config import settings
+        from app.services.filter_schema import PURPOSE_OPTIONS
+
+        assert settings.AD_DEFAULT_PURPOSE in [o["code"] for o in PURPOSE_OPTIONS]
