@@ -352,6 +352,22 @@ are all rejected by validation; the web UI's own query asks for the same
 by the upstream but came back empty on every row observed, so don't build a
 layout that needs them.
 
+## Is there a link back to the original ad?
+
+Short answer: **no — the upstream does not provide one.** Worth stating
+because it is a reasonable thing to expect and the schema half-promises it.
+
+| What you might want | Do we have it? |
+| - | - |
+| The ad's click-through / landing page | **No.** `creative.txtUrl` exists in the schema and is **empty on every row** — verified in our own data (0 of 178) and live against the API. No `link`, `url`, `landingUrl`, `clickUrl`, `jumpUrl`, `deeplink`, `targetUrl` or `adUrl` field exists at all; all are rejected by GraphQL validation |
+| A permalink to the creative on AppGrowing | **No.** The `materialIds` filter returns 0 rows even for an id we hold, under every `purpose`, so the id is not addressable that way and a deep link can't be constructed from it |
+| The creative file itself | **Yes** — `media_url` / `poster_url` (signed, dies at `media_url_expires_at`) and, better, our permanent S3 copy via `media-url` |
+| Where the ad points, indirectly | **Partly** — the advertiser's store pages, `gp_app_url` / `ios_app_url` on `ad_advertisers`. Sparse: each populated on 7 of the 48 advertisers observed |
+
+So the outward-facing identity of an ad here is its **advertiser**, not a URL.
+A creative detail view can offer "open on Google Play / App Store" when the
+advertiser has those, and otherwise has nothing to link to.
+
 ## Feeding content_pipeline
 
 ```bash

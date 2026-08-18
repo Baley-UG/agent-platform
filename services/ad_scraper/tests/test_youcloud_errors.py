@@ -70,6 +70,27 @@ class TestClassify:
         assert isinstance(classify(_error(None, "PARAMETER ERROR, clear the filter")), BadFilter)
         assert isinstance(classify(_error(None, "The System Is Busy")), TransientError)
 
+    def test_rate_limit_is_its_own_transient(self):
+        """`00:400998` is the rate limiter. Retryable, but it should read as
+        "we went too fast" rather than landing in the unknown bucket."""
+        from app.services.youcloud.errors import RateLimited
+
+        exc = classify(_error("00:400998", "High visiting frequency, please try again later"))
+        assert isinstance(exc, RateLimited)
+        assert isinstance(exc, TransientError), "must keep the retry path"
+
+    def test_rate_limit_matched_by_message_too(self):
+        from app.services.youcloud.errors import RateLimited
+
+        assert isinstance(classify(_error(None, "High visiting frequency")), RateLimited)
+
+    def test_plan_denied_also_fires_on_an_unknown_operation_name(self):
+        """Measured: the same query and cookie succeeds as `materialList` and
+        returns 00:403001 as `p` or `foo`. The "upgrade your plan" wording
+        would send a caller to debug their subscription instead of the query."""
+        exc = classify(_error("00:403001", "Permission denied, please upgrade your plan"))
+        assert isinstance(exc, PlanDenied)
+
     def test_unknown_error_defaults_to_transient(self):
         # Retryable-by-default: an unknown permanent error still exhausts
         # its attempts, whereas a terminal default would abandon a
