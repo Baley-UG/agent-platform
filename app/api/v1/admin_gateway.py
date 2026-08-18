@@ -248,3 +248,33 @@ async def proxy_instagram_scraper(
         api_key=settings.IG_SCRAPER_API_KEY,
         path=path,
     )
+
+
+# ---- /api/v1/ad-scraper/{path} → ad_scraper service ----
+
+
+@router.api_route(
+    "/ad-scraper/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+    # See cp proxy above — federation handles the visible routes.
+    include_in_schema=False,
+)
+async def proxy_ad_scraper(
+    path: str,
+    request: Request,
+    principal: AdminPrincipal = Depends(require_admin_token),
+) -> Response:
+    """Proxy to ad_scraper. Global admin only — it has no per-project scope."""
+    if principal.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="admin role required")
+    if not settings.AD_SCRAPER_API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="ad_scraper service token not configured (AD_SCRAPER_API_KEY)",
+        )
+    return await _proxy(
+        request=request,
+        base_url=settings.AD_SCRAPER_URL,
+        api_key=settings.AD_SCRAPER_API_KEY,
+        path=path,
+    )

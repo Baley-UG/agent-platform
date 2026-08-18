@@ -90,6 +90,24 @@ services:
         condition: service_healthy
 
   # ------------------------------------------------------------------
+  # ad_scraper — hot-reload + host-published port for direct curl/debug.
+  # In prod the main `app/` gateway is the only public surface.
+  # ------------------------------------------------------------------
+  ad-scraper-api:
+    volumes:
+      - ./services/ad_scraper/app:/app/app
+      - ./services/ad_scraper/alembic:/app/alembic
+      - ./services/ad_scraper/alembic.ini:/app/alembic.ini
+    command:
+      ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8083", "--reload", "--reload-dir", "/app/app"]
+    ports:
+      - "${AD_SCRAPER_HOST_PORT:-127.0.0.1:8083}:8083"
+
+  ad-scraper-worker:
+    volumes:
+      - ./services/ad_scraper/app:/app/app
+
+  # ------------------------------------------------------------------
   # MinIO — S3-compatible object storage for local dev.
   # Console at http://localhost:9001 (minioadmin / minioadmin).
   # In prod, drop this override file and point S3_* env at Hetzner.

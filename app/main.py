@@ -145,14 +145,15 @@ from app.api.v1.admin_oidc import oidc_callback  # noqa: E402
 app.get("/auth/callback", include_in_schema=False)(oidc_callback)
 
 # Federate OpenAPI from downstream services so /docs on port 8000 shows
-# the proxied `/instagram-scraper/...` and `/cp/...` endpoints with their
-# real schemas (not just a generic catch-all proxy stub).
+# the proxied `/instagram-scraper/...`, `/cp/...` and `/ad-scraper/...`
+# endpoints with their real schemas (not just a generic catch-all proxy stub).
 install_openapi_federation(
     app,
     downstreams=[
         # (mount_prefix, base_url, schema_namespace)
         ("instagram-scraper", settings.IG_SCRAPER_URL, "IGScraper_"),
         ("cp", settings.CONTENT_PIPELINE_URL, "CP_"),
+        ("ad-scraper", settings.AD_SCRAPER_URL, "AdScraper_"),
     ],
     api_prefix=settings.API_V1_STR,
 )

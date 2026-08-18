@@ -1,0 +1,27 @@
+# Never copy host venvs into the image — `COPY . .` runs after the
+# Dockerfile creates /app/.venv, so a host venv silently overwrites it and
+# the container dies with `exec /app/.venv/bin/uvicorn: no such file or
+# directory`. Same guard content_pipeline needs.
+.venv
+.venv.*
+venv
+
+# Caches
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.ruff_cache
+*.egg-info
+
+# Editor / OS
+.DS_Store
+.idea
+.vscode
+
+# Local dev only
+.env
+.env.local
+.env.*.local
+logs/
+*.log

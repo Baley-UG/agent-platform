@@ -166,6 +166,23 @@ def presigned_get_url(key: str, ttl: Optional[int] = None) -> str:
     )
 
 
+def copy_object(source_key: str, dest_key: str) -> str:
+    """Server-side copy within the bucket. Returns `dest_key`.
+
+    Used when importing an asset another service already mirrored (e.g.
+    `ad_scraper` under `ad-scraper/materials/...`). The copy keeps the
+    reference's lifecycle independent of the producing service — it can
+    prune its own prefix without breaking our rows — and because S3 does
+    the copy server-side, no bytes travel through this process.
+    """
+    client().copy_object(
+        Bucket=settings.S3_BUCKET,
+        CopySource={"Bucket": settings.S3_BUCKET, "Key": source_key},
+        Key=dest_key,
+    )
+    return dest_key
+
+
 def delete_object(key: str) -> None:
     client().delete_object(Bucket=settings.S3_BUCKET, Key=key)
 

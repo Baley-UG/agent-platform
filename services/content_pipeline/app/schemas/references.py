@@ -8,7 +8,7 @@ from typing import List, Literal, Optional
 
 from pydantic import AliasChoices, BaseModel, Field, field_validator
 
-SourceProvider = Literal["instagram", "tiktok", "manual_upload"]
+SourceProvider = Literal["instagram", "tiktok", "manual_upload", "appgrowing"]
 ReferenceStatus = Literal["candidate", "approved", "archived"]
 
 
@@ -52,6 +52,34 @@ class ReferenceImportFromScraper(BaseModel):
         if isinstance(v, int):
             return str(v)
         return v
+
+
+class ReferenceImportFromAds(BaseModel):
+    """Pull an `ad_scraper.ad_materials` row into our reference pool.
+
+    Unlike the Instagram path this needs no download: `ad_scraper` mirrors
+    every creative into the shared bucket at ingestion time (YouCloud's
+    signed URLs expire ~15 days out), so the import is a server-side S3
+    copy plus a row.
+
+    `material_id` is AppGrowing's 32-hex creative id — a string, with none
+    of the 2^53 precision trap Instagram pks have.
+    """
+
+    material_id: str = Field(
+        min_length=1,
+        max_length=64,
+        description="AppGrowing material id (32-hex), as shown by ad_scraper's /materials.",
+    )
+    auto_approve: bool = False
+    copy_media: bool = Field(
+        default=True,
+        description=(
+            "Copy ad_scraper's mirrored object into this project's prefix. "
+            "False references it in place — cheaper, but the row breaks if "
+            "ad_scraper ever prunes its own prefix."
+        ),
+    )
 
 
 class ReferenceUpdate(BaseModel):
