@@ -77,7 +77,6 @@ class TestRoutes:
             "/ready",
             "/api/v1/credentials",
             "/api/v1/credentials/session",
-            "/api/v1/credentials/session/invalidate-cache",
             "/api/v1/credentials/disable",
             "/api/v1/jobs",
             "/api/v1/jobs/{job_id}",

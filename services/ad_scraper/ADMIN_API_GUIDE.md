@@ -664,8 +664,13 @@ parsed. The token may still work, but no advance warning is possible.
 **There is no login endpoint.** Automatic login was considered and dropped;
 nothing stores a password. Don't build a username/password form.
 
-`POST /ad-scraper/credentials/session/invalidate-cache` and
-`POST /ad-scraper/credentials/disable` exist for edge cases — not worth
+**Rotating a token takes effect immediately**, in the worker as well as the
+API — there is no cache to flush, so the panel needs no "apply" step after a
+PUT. (`POST /credentials/session/invalidate-cache` used to exist for that and
+has been removed; it only ever cleared the API process's copy, which was the
+half that did not matter.)
+
+`POST /ad-scraper/credentials/disable` exists for edge cases — not worth
 surfacing in v1.
 
 ### `GET /ad-scraper/health` and `/ready`

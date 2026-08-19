@@ -1,11 +1,13 @@
-"""Tests for the in-process session-token cache.
+"""Credential helpers: expiry margin, redaction, and the model's shape.
 
-The cache is what makes the token approach cheap: without it every request
-costs a DB round-trip plus a Fernet decrypt. Its correctness rests entirely
-on invalidating at the right moments, which is what these pin.
+Formerly `test_token_cache.py`. The cache it tested is gone — see the note in
+`app/services/credentials.py`. A module-level cache is per PROCESS, and this
+service runs two: the API would store a rotated token and prime its own copy
+while the worker kept using the old one until a job failed. What it bought,
+measured, was 0.66 ms per read against a rate gate that already spaces
+requests 1500 ms apart.
 
-No database — the tests drive `_cache_store` / `_cache_read` directly and
-build `Credential` rows in memory.
+`TestNoCaching` is the regression guard for that.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -17,73 +19,67 @@ from app.models.credential import ACTIVE, DISABLED, EXPIRED, LOGIN_FAILED, Crede
 from app.services import credentials as creds
 
 
-@pytest.fixture(autouse=True)
-def _clean_cache():
-    """Every test starts and ends with an empty cache."""
-    creds.invalidate_cache("test_setup")
-    yield
-    creds.invalidate_cache("test_teardown")
-
-
 def _future(seconds: int) -> datetime:
     return datetime.now(timezone.utc) + timedelta(seconds=seconds)
 
 
-class TestCacheReadWrite:
-    def test_round_trips_a_token(self):
-        creds._cache_store("default", "tok-123", _future(86_400))
-        assert creds._cache_read("default") == "tok-123"
+class TestNoCaching:
+    """A rotated token must take effect in every process on the next read."""
 
-    def test_miss_on_empty_cache(self):
-        assert creds._cache_read("default") is None
+    def test_the_cache_helpers_are_gone(self):
+        """Named explicitly: reintroducing any of these brings the
+        cross-process staleness back with them."""
+        for gone in ("invalidate_cache", "_cache_store", "_cache_read", "_CachedToken"):
+            assert not hasattr(creds, gone), f"{gone} is back — see the note in credentials.py"
 
-    def test_miss_on_a_different_label(self):
-        """A second seat must not be served another seat's token."""
-        creds._cache_store("default", "tok-a", _future(86_400))
-        assert creds._cache_read("other") is None
+    def test_every_read_hits_the_row(self, monkeypatch):
+        """Two consecutive reads must both load the row, so a token rotated
+        between them is picked up rather than served stale from memory."""
+        import contextlib
 
-    def test_invalidate_clears_it(self):
-        creds._cache_store("default", "tok-123", _future(86_400))
-        creds.invalidate_cache("test")
-        assert creds._cache_read("default") is None
+        loads = []
 
+        @contextlib.contextmanager
+        def fake_scope():
+            yield object()
 
-class TestStaleness:
-    def test_unknown_expiry_is_not_stale(self):
-        """A token whose `exp` we couldn't parse may be perfectly good.
+        class _Row:
+            session_cookie_enc = b"enc"
+            status = "active"
+            session_expires_at = _future(86_400)
 
-        Treating it as stale would add a DB read per request and gain
-        nothing — a rejection from the API invalidates it instead.
-        """
-        creds._cache_store("default", "tok", None)
-        assert creds._cache_read("default") == "tok"
+        def fake_get(session, label="default"):
+            loads.append(label)
+            return _Row()
 
-    def test_token_inside_the_refresh_margin_is_dropped(self):
-        margin = settings.AD_SESSION_REFRESH_MARGIN_SECONDS
-        creds._cache_store("default", "tok", _future(margin // 2))
-        assert creds._cache_read("default") is None, "should not serve a token about to die mid-job"
+        monkeypatch.setattr(creds, "session_scope", fake_scope)
+        monkeypatch.setattr(creds, "get_credential", fake_get)
+        monkeypatch.setattr(creds.crypto, "decrypt", lambda blob: "tok-from-row")
 
-    def test_token_outside_the_margin_is_served(self):
-        margin = settings.AD_SESSION_REFRESH_MARGIN_SECONDS
-        creds._cache_store("default", "tok", _future(margin * 3))
-        assert creds._cache_read("default") == "tok"
+        assert creds.current_cookie() == "tok-from-row"
+        assert creds.current_cookie() == "tok-from-row"
+        assert len(loads) == 2, "second read came from memory — the cache is back"
 
-    def test_already_expired_token_is_dropped(self):
-        creds._cache_store("default", "tok", _future(-3600))
-        assert creds._cache_read("default") is None
+    def test_a_rotated_token_is_seen_immediately(self, monkeypatch):
+        import contextlib
 
-    def test_naive_expiry_is_treated_as_utc(self):
-        """Postgres can hand back a naive datetime depending on the driver;
-        comparing it to an aware `now` would raise."""
-        naive = (datetime.now(timezone.utc) + timedelta(days=5)).replace(tzinfo=None)
-        creds._cache_store("default", "tok", naive)
-        assert creds._cache_read("default") == "tok"
+        @contextlib.contextmanager
+        def fake_scope():
+            yield object()
 
-    def test_a_stale_read_also_clears_the_entry(self):
-        creds._cache_store("default", "tok", _future(-1))
-        creds._cache_read("default")
-        # Second read must not resurrect it even before staleness is re-checked.
-        assert creds._cache is None
+        tokens = iter(["old-token", "new-token"])
+
+        class _Row:
+            session_cookie_enc = b"enc"
+            status = "active"
+            session_expires_at = _future(86_400)
+
+        monkeypatch.setattr(creds, "session_scope", fake_scope)
+        monkeypatch.setattr(creds, "get_credential", lambda session, label="default": _Row())
+        monkeypatch.setattr(creds.crypto, "decrypt", lambda blob: next(tokens))
+
+        assert creds.current_cookie() == "old-token"
+        assert creds.current_cookie() == "new-token", "worker would keep the stale token"
 
 
 class TestNeedsRefresh:
