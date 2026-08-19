@@ -14,18 +14,16 @@ with account lockout as the failure mode — to save a weekly paste. Nothing
 here stores a password, so there is none to leak and nothing that can lock
 the account out.
 
-Caching: the decrypted token is held in process memory alongside its
-expiry, so the hot path costs neither a DB round-trip nor a Fernet decrypt
-per request. The cache is invalidated when a new token is stored, when the
-API rejects the current one, and when its own expiry passes. A
-`threading.Lock` guards it because FastAPI runs sync endpoints in a
-threadpool while the worker drives the same helpers from an event loop.
+No caching. The decrypted token is read from the row on every request,
+which costs 0.66 ms — against a rate gate that already holds requests
+1500 ms apart. An in-process cache used to live here and was removed: this
+service runs two processes, so the API could store a rotated token while
+the worker kept using the old one until a job failed. See the note further
+down for the full reasoning.
 """
 
 from __future__ import annotations
 
-import threading
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -47,65 +45,23 @@ class CredentialError(RuntimeError):
 
 
 # ----------------------------------------------------------------------
-# In-process token cache
+# No token cache — deliberately
 # ----------------------------------------------------------------------
-
-
-@dataclass
-class _CachedToken:
-    """A decrypted token plus what we know about its lifetime."""
-
-    label: str
-    cookie: str
-    expires_at: Optional[datetime]
-
-    def is_stale(self, *, now: Optional[datetime] = None) -> bool:
-        """True once the token is inside the refresh margin of its expiry.
-
-        An unknown expiry is NOT stale: the token may be perfectly good, and
-        discarding it would just add a DB read per request with nothing
-        gained. A rejection from the API invalidates it instead.
-        """
-        if self.expires_at is None:
-            return False
-        now = now or datetime.now(timezone.utc)
-        expires_at = self.expires_at
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
-        return expires_at - timedelta(seconds=settings.AD_SESSION_REFRESH_MARGIN_SECONDS) <= now
-
-
-_cache: Optional[_CachedToken] = None
-_cache_lock = threading.Lock()
-
-
-def invalidate_cache(reason: str = "explicit") -> None:
-    """Drop the cached token so the next read goes back to the database."""
-    global _cache
-    with _cache_lock:
-        had_token = _cache is not None
-        _cache = None
-    if had_token:
-        logger.info("ad_token_cache_invalidated", reason=reason)
-
-
-def _cache_store(label: str, cookie: str, expires_at: Optional[datetime]) -> None:
-    global _cache
-    with _cache_lock:
-        _cache = _CachedToken(label=label, cookie=cookie, expires_at=expires_at)
-
-
-def _cache_read(label: str) -> Optional[str]:
-    """Return the cached token for `label`, or None when unusable."""
-    with _cache_lock:
-        cached = _cache
-    if cached is None or cached.label != label:
-        return None
-    if cached.is_stale():
-        invalidate_cache("expired")
-        return None
-    return cached.cookie
-
+#
+# There used to be a module-level cache of the decrypted token. It was
+# removed because a module-level anything is per PROCESS, and this service
+# runs two: the API stores a rotated token and primes ITS cache, while the
+# worker — the process that actually makes upstream requests — keeps serving
+# the old one. Rotating a token therefore did not reach the worker at all
+# until a job failed and the rejection path invalidated it. There was even a
+# `POST /credentials/session/invalidate-cache` endpoint whose docstring named
+# "another replica storing a newer token" as its use case, which is precisely
+# the case it could not fix.
+#
+# What the cache bought, measured: 0.66 ms per read. The rate gate already
+# holds requests 1500 ms apart, so it saved 0.04% of one request interval in
+# exchange for cross-process staleness. Reading the row every time is the
+# cheaper trade.
 
 # ----------------------------------------------------------------------
 # Row access
@@ -161,7 +117,8 @@ def pick_usable(session: Session) -> Optional[Credential]:
 def set_session_cookie(session: Session, cookie: str, *, label: str = DEFAULT_LABEL) -> Credential:
     """Store a `sessionId` token and derive its expiry from the JWT itself.
 
-    Also primes the in-process cache, so the very next request skips the DB.
+    Every process reads the row on its next request, so a rotated token takes
+    effect immediately in the worker as well as the API.
     """
     cookie = (cookie or "").strip()
     if not cookie:
@@ -175,8 +132,6 @@ def set_session_cookie(session: Session, cookie: str, *, label: str = DEFAULT_LA
     row.last_error = None
     row.updated_at = datetime.now(timezone.utc)
     session.add(row)
-
-    _cache_store(label, cookie, row.session_expires_at)
 
     if row.session_expires_at is None:
         # Not fatal: the token may still be accepted. But we can't warn
@@ -213,7 +168,6 @@ def mark_rejected(session: Session, reason: str, *, label: str = DEFAULT_LABEL) 
     which stops jobs from replaying a token we know is dead and makes the
     dashboard say so.
     """
-    invalidate_cache("rejected_by_api")
     row = get_credential(session, label)
     if row is None:
         return None
@@ -238,7 +192,6 @@ def mark_rejected(session: Session, reason: str, *, label: str = DEFAULT_LABEL) 
 
 def disable(session: Session, *, label: str = DEFAULT_LABEL) -> Optional[Credential]:
     """Take a credential out of service without deleting its token."""
-    invalidate_cache("disabled")
     row = get_credential(session, label)
     if row is None:
         return None
@@ -273,19 +226,15 @@ def needs_refresh(row: Credential, *, now: Optional[datetime] = None) -> bool:
 def current_cookie(label: str = DEFAULT_LABEL) -> Optional[str]:
     """Return the usable `sessionId`, or None when there isn't one.
 
-    Reads the in-process cache first; on a miss, loads and decrypts the row
-    and re-primes the cache. Opens its own DB session because the caller is
-    an async request path that holds none.
+    Reads the row every time — there is no cache, on purpose; see the note
+    above. Opens its own DB session because the caller is an async request
+    path that holds none.
 
     Returns None — rather than a stale token — when the row is locked out or
     past its expiry. The client turns that into `AuthExpired`, and the job
     records an actionable reason instead of burning a request on a token the
     server will refuse.
     """
-    cached = _cache_read(label)
-    if cached is not None:
-        return cached
-
     with session_scope() as session:
         row = get_credential(session, label) or pick_usable(session)
         if row is None or not row.session_cookie_enc:
@@ -302,9 +251,7 @@ def current_cookie(label: str = DEFAULT_LABEL) -> Optional[str]:
             )
             return None
         cookie = crypto.decrypt(row.session_cookie_enc)
-        expires_at = row.session_expires_at
 
-    _cache_store(label, cookie, expires_at)
     return cookie
 
 

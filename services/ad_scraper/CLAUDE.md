@@ -84,9 +84,14 @@ No scheduler. No Redis. No Celery. No separate database.
   token. The worker also calls `credentials.mark_rejected`, which drops the
   cached token and — past the threshold — flips the row to `login_failed` so
   jobs stop replaying a token the server already refused.
-- **The decrypted token is cached in process memory** with its expiry, so the
-  hot path costs no DB round-trip and no Fernet decrypt. Invalidated on
-  store, on API rejection, and on its own expiry.
+- **There is no token cache, and that is the fix rather than an omission.**
+  A module-level cache is per PROCESS and this service runs two, so storing a
+  rotated token through the API primed the API's copy while the worker — the
+  process making upstream requests — kept the old one until a job failed. The
+  `POST /credentials/session/invalidate-cache` endpoint could not help: it
+  cleared the API's copy only. Measured cost of reading the row every time:
+  0.66 ms, against a rate gate that already spaces requests 1500 ms apart.
+  `TestNoCaching` in `tests/test_credentials.py` guards the removal by name.
 
 ## Milestone status
 

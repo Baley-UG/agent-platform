@@ -48,18 +48,6 @@ def update_session(payload: SessionUpdate, session: Session = Depends(get_sessio
     return CredentialRead(**creds.redacted_view(row))
 
 
-@router.post("/session/invalidate-cache", response_model=CredentialRead)
-def invalidate_cache(session: Session = Depends(get_session)) -> CredentialRead:
-    """Drop the in-process token cache without changing the stored token.
-
-    Only needed when the row was edited out of band (a direct SQL update, or
-    another replica storing a newer token) — the normal paths invalidate it
-    on their own.
-    """
-    creds.invalidate_cache("api_request")
-    return CredentialRead(**creds.redacted_view(creds.get_credential(session)))
-
-
 @router.post("/disable", response_model=CredentialRead)
 def disable_credential(session: Session = Depends(get_session)) -> CredentialRead:
     """Take the credential out of service without deleting its token."""

@@ -242,7 +242,7 @@ large `total_reported`, that is a bug — quote the job id.
    docker compose up -d ad-scraper-api ad-scraper-worker
    ```
 
-## Authentication — a cached session token
+## Authentication — a stored session token
 
 One cookie value, `sessionId`, is the entire auth surface. It is a JWT; its
 `exp` claim is read (without signature verification — we only want to know
@@ -286,12 +286,21 @@ ago". `/ready` reports `youcloud_session` as
 readiness, because already-ingested data still serves fine; only new jobs
 are blocked.
 
-**Caching.** The decrypted token is held in process memory with its expiry,
-so the hot path costs neither a DB round-trip nor a Fernet decrypt. It is
-invalidated when a new token is stored, when the API rejects the current
-one, and when its own expiry passes. `POST /credentials/session/invalidate-cache`
-exists for the out-of-band case (a direct SQL edit, or another replica
-storing a newer token).
+**No caching, deliberately.** The token is read from the row on every
+request. There used to be an in-process cache, and it had a real bug: a
+module-level cache is per **process**, and this service runs two. Pasting a
+fresh token hits the API process, which primed *its* copy — while the worker,
+the process that actually makes upstream requests, kept serving the old one.
+A rotated token therefore did not reach the worker at all until a job failed
+and the rejection path happened to invalidate it. There was even a
+`POST /credentials/session/invalidate-cache` endpoint whose docstring named
+"another replica storing a newer token" as its use case, which is exactly the
+case it could not fix. It has been removed along with the cache.
+
+What the cache bought, measured: **0.66 ms** per read. The rate gate already
+holds requests **1500 ms** apart, so it saved 0.04% of one request interval
+in exchange for cross-process staleness. Rotating a token now takes effect on
+the next request in every process.
 
 **When the token dies**, a job fails terminally rather than retrying — only
 an operator can mint a new one, so retrying would burn the attempt budget to
