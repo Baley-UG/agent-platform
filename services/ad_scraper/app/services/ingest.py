@@ -23,6 +23,8 @@ as "we ingested everything matching this filter", which would be false.
 
 from __future__ import annotations
 
+import asyncio
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
@@ -69,6 +71,9 @@ class IngestStats:
     # "the upstream is slow" from "we are deliberately pacing ourselves" —
     # the two look identical in wall-clock time otherwise.
     throttle_wait_seconds: float = 0.0
+    # Wall-clock spent downloading media. The slow half of a mirroring job by
+    # a wide margin, so worth separating from everything else.
+    mirror_seconds: float = 0.0
     truncated: bool = False
     notes: list[str] = field(default_factory=list)
 
@@ -89,6 +94,7 @@ class IngestStats:
             "mirror_cached": self.mirror_cached,
             "total_reported": self.total_reported,
             "throttle_wait_seconds": self.throttle_wait_seconds,
+            "mirror_seconds": self.mirror_seconds,
             "truncated": self.truncated,
             "notes": self.notes,
         }
@@ -136,7 +142,18 @@ async def _persist_page(
     stats: IngestStats,
     seen_ids: set[str],
 ) -> int:
-    """Upsert every material on one page, then mirror its media.
+    """Upsert every material on one page, then mirror their media concurrently.
+
+    Two phases on purpose. The upserts run first, one transaction each, in
+    order — they are cheap (0.03-0.07s per material measured) and a Session
+    must not cross threads. Only then do the downloads go out, bounded by
+    `AD_MIRROR_CONCURRENCY`, because that is the slow part: 4.46s per
+    creative measured against the live CDN, which on a full page of 50 is
+    close to four minutes of pure waiting.
+
+    Concurrency here buys roughly 1.2-1.6x, not Nx. The constraint is
+    bandwidth, not latency — throughput measured 2.63 MB/s at 1 concurrent,
+    3.80 at 4, and 2.80 at 8. Worth having, worth not overselling.
 
     Returns the count of ids not seen earlier in this job. Zero means the
     page was entirely a repeat, which is how the API signals "past the end"
@@ -144,6 +161,7 @@ async def _persist_page(
     """
     do_mirror = mirror.should_mirror(job_mirror=job_mirror)
     fresh = 0
+    pending: list[tuple[str, Optional[str], Optional[str]]] = []
 
     for row in rows:
         if not isinstance(row, dict):
@@ -209,11 +227,47 @@ async def _persist_page(
             stats.mirror_skipped += 1
             continue
 
-        media_key, poster_key = await mirror.transfer_async(
-            material_id=material_id,
-            media_url=media_url,
-            poster_url=poster_url,
-        )
+        pending.append((material_id, media_url, poster_url))
+
+    if pending:
+        await _mirror_page(pending, stats=stats)
+
+    return fresh
+
+
+async def _mirror_page(
+    pending: list,
+    *,
+    stats: IngestStats,
+) -> None:
+    """Download and store one page's media, `AD_MIRROR_CONCURRENCY` at a time.
+
+    Failures are per-creative: `transfer` already swallows its own errors and
+    returns empty keys, so one dead URL costs a counter rather than the page.
+
+    The database write stays on the event loop. `transfer` runs in a worker
+    thread and touches no Session precisely so this split is possible.
+    """
+    limit = max(1, settings.AD_MIRROR_CONCURRENCY)
+    gate = asyncio.Semaphore(limit)
+    started = time.monotonic()
+
+    async def one(material_id: str, media_url: Optional[str], poster_url: Optional[str]) -> None:
+        async with gate:
+            try:
+                media_key, poster_key = await mirror.transfer_async(
+                    material_id=material_id,
+                    media_url=media_url,
+                    poster_url=poster_url,
+                )
+            except Exception as exc:  # noqa: BLE001 — a mirror must never fail a page
+                stats.mirror_failed += 1
+                logger.warning(
+                    "ad_mirror_unexpected_error",
+                    material_id=material_id[:64],
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                return
         if media_key or poster_key:
             with session_scope() as session:
                 mirror.persist_keys(
@@ -226,7 +280,14 @@ async def _persist_page(
         else:
             stats.mirror_failed += 1
 
-    return fresh
+    await asyncio.gather(*(one(mid, murl, purl) for mid, murl, purl in pending))
+    stats.mirror_seconds = round(stats.mirror_seconds + (time.monotonic() - started), 2)
+    logger.info(
+        "ad_page_mirrored",
+        creatives=len(pending),
+        concurrency=limit,
+        seconds=round(time.monotonic() - started, 2),
+    )
 
 
 async def run_job(

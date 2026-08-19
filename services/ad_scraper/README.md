@@ -535,6 +535,41 @@ So the outward-facing identity of an ad here is its **advertiser**, not a URL.
 A creative detail view can offer "open on Google Play / App Store" when the
 advertiser has those, and otherwise has nothing to link to.
 
+## Mirror downloads run concurrently — and why that is worth only ~1.4x
+
+Downloading is the slow half of a mirroring job by a wide margin: 4.46s per
+creative measured against the live CDN, so a full page of 50 is close to four
+minutes of pure waiting. Those downloads now go out `AD_MIRROR_CONCURRENCY`
+at a time (default 4) instead of one after another.
+
+**Do not expect Nx.** The constraint is bandwidth, not latency. Measured with
+distinct files at each level, so no CDN caching bias:
+
+| Concurrent | Throughput |
+| - | - |
+| 1 | 2.63 MB/s |
+| 4 | **3.80 MB/s** |
+| 8 | 2.80 MB/s |
+
+So roughly 1.2-1.6x, peaking around 4, and pushing higher stops helping. A
+real job confirms the ceiling rather than beating it: 8 creatives, 11.3 MB,
+3.74s — 3.03 MB/s, the same band. That job finished quickly because the files
+were small (1.42 MB average, short videos), not because concurrency
+multiplied anything.
+
+The shape matters as much as the number. `_persist_page` now runs in two
+phases: every upsert first, one transaction each, in order — they are cheap
+(0.03-0.07s per material) and a SQLAlchemy Session must not cross threads —
+then the downloads, bounded, with `persist_keys` back on the event loop.
+`mirror.transfer` touches no database precisely so this split is possible.
+
+`stats.mirror_seconds` records the download time per job, separately from
+`throttle_wait_seconds`. Mirroring dominates a job's wall clock, so "the job
+was slow" and "the downloads were slow" need to be different answers.
+
+Failures stay per-creative: a raising transfer costs one `mirror_failed`
+counter, not the page.
+
 ## Feeding content_pipeline
 
 ```bash

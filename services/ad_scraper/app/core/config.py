@@ -212,6 +212,12 @@ class Settings(BaseSettings):
     AD_MIRROR_MEDIA: str = Field(default="always", description="always | job | never")
     AD_MIRROR_MAX_BYTES: int = Field(default=80 * 1024 * 1024, description="Ad videos run long; 80 MB headroom.")
     AD_MIRROR_TIMEOUT_SECONDS: float = Field(default=60.0)
+    # How many creatives download at once. Measured against the live CDN, the
+    # constraint is bandwidth rather than latency: throughput went 2.63 MB/s
+    # at 1, 3.80 at 4, and back to 2.80 at 8. So this buys roughly 1.2-1.6x,
+    # not Nx, and pushing it higher stops helping. Downloads only — the
+    # database writes stay serialised, since a Session must not cross threads.
+    AD_MIRROR_CONCURRENCY: int = Field(default=4, ge=1, le=16)
 
     # Shared bucket with ig_scraper + content_pipeline. ad_scraper writes
     # under the prefix `ad-scraper/materials/<material_id>/...`.
