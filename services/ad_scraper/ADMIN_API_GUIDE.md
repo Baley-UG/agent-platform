@@ -580,6 +580,8 @@ Null until the job finishes. Then:
   "mirror_cached": 0,
   "mirror_failed": 0,
   "mirror_skipped": 0,
+  "mirror_seconds": 3.74,
+  "throttle_wait_seconds": 4.57,
   "total_reported": 731,
   "truncated": true,
   "notes": ["filter set reports 731 rows; this job's window covers 150. Raise page_to (max 200) to reach the rest."]
@@ -596,6 +598,19 @@ the filter (date window, country, media) across several jobs.
 end of a result set it repeats the last page instead of returning empty, so
 a `page_to` far above what the filter justifies is harmless but visible.
 `materials_seen` counts distinct creatives only.
+
+**Two timing fields, and the difference decides what to tell the operator.**
+`mirror_seconds` is time spent downloading media; `throttle_wait_seconds` is
+time held at the upstream rate gate on purpose. A job that took four minutes
+with `mirror_seconds: 230` was busy, not stuck — downloading is the slow half
+by a wide margin (4.46s per creative measured, and a page holds 50). A job
+with a large `throttle_wait_seconds` was being paced deliberately. Neither is
+a fault; showing the raw duration alone makes both look like one.
+
+Downloads run `AD_MIRROR_CONCURRENCY` at a time (4 by default). Worth setting
+expectations if you surface an ETA: that buys about 1.2-1.6x, not 4x, because
+the constraint is bandwidth — measured 2.63 MB/s at 1 concurrent, 3.80 at 4,
+2.80 at 8.
 
 `mirror_cached` counts creatives already in our bucket, skipped without a
 download. On a re-run of the same filter expect
