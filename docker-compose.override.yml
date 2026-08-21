@@ -70,6 +70,10 @@ services:
         condition: service_healthy
 
   content-pipeline-render:
+    # Dev: run the new remake_ffmpeg queue without waiting on an
+    # image rebuild (bind-mounted code is already current; only the
+    # Dockerfile CMD lags). Prod uses the Dockerfile.ffmpeg CMD.
+    command: ["python", "-m", "app.worker", "--queues", "remake_ffmpeg"]
     volumes:
       - ./services/content_pipeline/app:/app/app
     depends_on:

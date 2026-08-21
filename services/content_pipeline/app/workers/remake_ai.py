@@ -53,27 +53,39 @@ def _download_output(url: str, work: str, name: str) -> str:
 
 
 def _asr(session: Session, step: RemakeStep, remake: Remake) -> dict:
-    """fal whisper over the source video → remake.asr_json (best-effort)."""
-    routes = _routes(session, "remake_asr", remake.project_id)
-    audio_url = _presign(remake.source_s3_key)
+    """fal whisper over the source video → remake.asr_json.
 
-    def body_for(route: ModelRoute) -> dict:
-        return {"audio_url": audio_url, "chunk_level": "word", **(route.params or {})}
+    BEST-EFFORT: the transcript only sharpens the plan, it isn't required
+    (many ads have no speech, and fal can't fetch a private/local bucket
+    in dev). So this NEVER raises — a failure records an empty transcript
+    and succeeds, which keeps `author_plan` unblocked. The reconciler's
+    dependency check treats only succeeded/skipped as satisfied, so a
+    hard failure here would otherwise stall the whole analysis phase.
+    """
+    try:
+        routes = _routes(session, "remake_asr", remake.project_id)
+        audio_url = _presign(remake.source_s3_key)
 
-    result = fal_queue.run_task(routes, body_for, timeout_seconds=900)
-    data = result.result or {}
-    remake.asr_json = {
-        "text": data.get("text", ""),
-        "chunks": data.get("chunks", []),
-    }
-    session.add(remake)
-    session.flush()
-    calls_svc.record(
-        session, project_id=remake.project_id, task_key="remake_asr",
-        provider="fal", model_id=result.model_id, remake_id=remake.id,
-        audio_seconds=remake.source_duration_sec, latency_ms=result.latency_ms,
-    )
-    return {"chars": len(remake.asr_json["text"])}
+        def body_for(route: ModelRoute) -> dict:
+            return {"audio_url": audio_url, "chunk_level": "word", **(route.params or {})}
+
+        result = fal_queue.run_task(routes, body_for, timeout_seconds=900)
+        data = result.result or {}
+        remake.asr_json = {"text": data.get("text", ""), "chunks": data.get("chunks", [])}
+        session.add(remake)
+        session.flush()
+        calls_svc.record(
+            session, project_id=remake.project_id, task_key="remake_asr",
+            provider="fal", model_id=result.model_id, remake_id=remake.id,
+            audio_seconds=remake.source_duration_sec, latency_ms=result.latency_ms,
+        )
+        return {"chars": len(remake.asr_json["text"])}
+    except Exception as exc:  # noqa: BLE001 — transcript is optional
+        logger.warning("remake_asr_skipped", remake_id=str(remake.id), error=str(exc))
+        remake.asr_json = {"text": "", "chunks": [], "error": str(exc)[:200]}
+        session.add(remake)
+        session.flush()
+        return {"chars": 0, "skipped": True}
 
 
 def _erase(session: Session, step: RemakeStep, remake: Remake) -> dict:
