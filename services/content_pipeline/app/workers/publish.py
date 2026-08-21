@@ -2,8 +2,9 @@
 
 Entry point: `app.workers.publish.run(plan_slot_id, force_now=False)`.
 
-Loads the slot's variant + final_asset_id, presigns a long-lived public
-URL (or uses the cdn URL when configured), invokes the matching social
+`plan_slots.variant_id` points at a `remakes.id`; the slot publishes
+that remake's `final_media_asset_id`. Presigns a long-lived public URL
+(or uses the cdn URL when configured), invokes the matching social
 publisher, and records the outcome on `publish_jobs` + the parent slot.
 """
 
@@ -18,8 +19,7 @@ from app.core.logging import logger
 from app.models.media_assets import MediaAsset
 from app.models.plan_slots import PlanSlot
 from app.models.publish_jobs import PublishJob
-from app.models.render_variants import RenderVariant
-from app.models.scenarios import Scenario
+from app.models.remakes import Remake
 from app.services import captions as captions_svc
 from app.services import publishing as svc
 from app.services.database import session_scope
@@ -74,31 +74,18 @@ def run(plan_slot_id: str, force_now: bool = False) -> dict:  # noqa: ARG001
         if slot.social_account_id is None:
             return {"ok": False, "error": "slot has no social_account"}
 
-        variant = session.get(RenderVariant, slot.variant_id)
-        if variant is None or variant.final_asset_id is None:
-            slot.last_error = "variant missing or no final_asset_id"
+        # `variant_id` points at a remake (the column name is kept for
+        # backwards compatibility with plan_slots / calendar).
+        remake = session.get(Remake, slot.variant_id)
+        if remake is None or remake.final_media_asset_id is None:
+            slot.last_error = "remake missing or not yet approved (no final media asset)"
             session.add(slot)
             session.flush()
-            return {"ok": False, "error": "variant or final asset missing"}
+            return {"ok": False, "error": "remake or final asset missing"}
 
-        # Resolve the asset list. Multi-image carousels populate
-        # `final_asset_ids` (2-10 entries); single-asset variants either
-        # leave it null or store a 1-element list. We treat anything
-        # with >1 entry as a carousel publish.
-        asset_id_strs: list[str] = []
-        if variant.final_asset_ids:
-            asset_id_strs = [str(x) for x in variant.final_asset_ids if x]
-        if not asset_id_strs:
-            asset_id_strs = [str(variant.final_asset_id)]
-
-        assets: list[MediaAsset] = []
-        for aid in asset_id_strs:
-            a = session.get(MediaAsset, uuid.UUID(aid))
-            if a is None:
-                return {"ok": False, "error": f"media_asset {aid} missing"}
-            assets.append(a)
-        # Backwards-compatible alias for the single-asset branch below.
-        asset = assets[0]
+        asset = session.get(MediaAsset, remake.final_media_asset_id)
+        if asset is None:
+            return {"ok": False, "error": "final media_asset missing"}
 
         # Reuse an existing pending job if one is already attached (retry path),
         # otherwise create a new one.
@@ -135,40 +122,19 @@ def run(plan_slot_id: str, force_now: bool = False) -> dict:  # noqa: ARG001
 
         public_url = _public_url_for_asset(asset)
 
-        # CP-M6.5 — source caption from plan_slot.caption_override → scenario.default_caption.
-        scenario = session.get(Scenario, variant.scenario_id) if variant.scenario_id else None
-        caption_text = captions_svc.resolve(slot, scenario)
+        # Caption: plan_slot.caption_override → remake.default_caption.
+        caption_text = captions_svc.resolve(slot, remake)
 
         try:
             if account.provider == "instagram":
-                # Carousel (multi-image) path: fan out one container per
-                # slide via `publish_carousel`. Single image — including
-                # a 1-slide carousel — falls back to `publish_image`.
-                # Video path stays unchanged (single mp4).
-                is_image_asset = (asset.mime_type or "").startswith("image/")
-                if is_image_asset and len(assets) >= 2:
-                    public_urls = [_public_url_for_asset(a) for a in assets]
-                    response = asyncio.run(
-                        publisher.publish_carousel(
-                            public_image_urls=public_urls,
-                            caption=caption_text,
-                        )
+                # A remake's final output is always a single video.
+                response = asyncio.run(
+                    publisher.publish_video(
+                        public_video_url=public_url,
+                        caption=caption_text,
+                        media_type=variant_to_ig_media_type(slot.variant_preset),
                     )
-                elif is_image_asset:
-                    response = asyncio.run(
-                        publisher.publish_image(
-                            public_image_url=public_url,
-                            caption=caption_text,
-                        )
-                    )
-                else:
-                    response = asyncio.run(
-                        publisher.publish_video(
-                            public_video_url=public_url,
-                            caption=caption_text,
-                            media_type=variant_to_ig_media_type(slot.variant_preset),
-                        )
-                    )
+                )
             elif account.provider == "tiktok":
                 response = asyncio.run(
                     publisher.publish_video(

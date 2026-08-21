@@ -29,14 +29,34 @@ import os
 import shutil
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from app.core import s3 as s3lib
 from app.core.config import settings
 from app.core.logging import logger
 from app.services.presets import ASPECT_DIMENSIONS
-from app.services.segments import Segment
 from app.services.video_frames import _probe_duration
+
+
+@dataclass
+class Cut:
+    """One time window to cut out of a source video.
+
+    Deliberately minimal — just the geometry the ffmpeg cutter needs.
+    The remake pipeline's creative fields (technique, prompt) live on
+    `remake_shots`; this dataclass stays a pure cut instruction so the
+    argv builder is trivially unit-testable.
+    """
+
+    idx: int
+    start_sec: float
+    end_sec: float
+
+    @property
+    def duration_sec(self) -> float:
+        return round(self.end_sec - self.start_sec, 3)
+
 
 DEFAULT_FPS = 30
 DEFAULT_CRF = 20
@@ -89,7 +109,7 @@ def _seek_args(start_sec: float, duration_sec: float) -> List[str]:
 def build_multicut_command(
     *,
     src_path: str,
-    segments: List[Segment],
+    segments: List[Cut],
     aspect: str,
     out_paths: List[str],
     fps: int = DEFAULT_FPS,
@@ -162,7 +182,7 @@ def cut_segments(
     project_id,
     scenario_id,
     src_s3_key: str,
-    segments: List[Segment],
+    segments: List[Cut],
     aspect: str,
     fit_mode: str = "cover",
     fps: int = DEFAULT_FPS,

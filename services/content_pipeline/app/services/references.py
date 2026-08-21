@@ -20,7 +20,6 @@ from app.core.config import settings
 from app.core.logging import logger
 from app.models.content_references import ContentReference
 from app.models.projects import Project
-from app.models.reference_usages import ReferenceUsage
 from app.schemas.references import (
     ReferenceImportFromAds,
     ReferenceImportFromScraper,
@@ -65,16 +64,16 @@ def to_read(
     if poster_url is None:
         poster_url = meta.get("ig_thumbnail_url") or media_url
 
-    # Scenario count — single COUNT(*) keyed on reference_id. Skip when
+    # Remake count — single COUNT(*) keyed on reference_id. Skip when
     # no session was supplied (older test paths).
-    scenarios_count = 0
+    remakes_count = 0
     if session is not None:
         from sqlalchemy import func
-        from app.models.scenarios import Scenario
+        from app.models.remakes import Remake
 
-        scenarios_count = int(
+        remakes_count = int(
             session.exec(
-                select(func.count(Scenario.id)).where(Scenario.reference_id == ref.id)
+                select(func.count(Remake.id)).where(Remake.reference_id == ref.id)
             ).one()
             or 0
         )
@@ -82,7 +81,7 @@ def to_read(
     payload = ReferenceRead.model_validate(ref)
     payload.media_url = media_url
     payload.poster_url = poster_url
-    payload.scenarios_count = scenarios_count
+    payload.remakes_count = remakes_count
     return payload
 
 
@@ -563,25 +562,32 @@ def archive(session: Session, project_id: uuid.UUID, reference_id: uuid.UUID) ->
 
 
 def usage_check(session: Session, project: Project, reference_id: uuid.UUID) -> UsageCheck:
-    """Return reuse history + the project's policy."""
+    """Return how many remakes were spawned from this reference.
+
+    The old reuse-policy gate lived on `scenario.create`; the remake
+    vertical does not gate reuse, so this is now purely informational —
+    "you have already remade this ad N times".
+    """
     get(session, project.id, reference_id)  # ensure exists & belongs to project
 
-    stmt = (
-        select(ReferenceUsage)
-        .where(ReferenceUsage.reference_id == reference_id)
-        .order_by(ReferenceUsage.created_at.desc())
+    from app.models.remakes import Remake
+
+    rows = list(
+        session.exec(
+            select(Remake)
+            .where(Remake.reference_id == reference_id)
+            .order_by(Remake.created_at.desc())
+        ).all()
     )
-    rows = list(session.exec(stmt).all())
     last_used_days_ago = None
     if rows:
         delta = datetime.now(timezone.utc) - rows[0].created_at
         last_used_days_ago = max(delta.days, 0)
     previous = [
         {
-            "scenario_id": str(r.scenario_id),
+            "remake_id": str(r.id),
             "status": r.status,
             "created_at": r.created_at.isoformat(),
-            "reuse_reason": r.reuse_reason or None,
         }
         for r in rows
     ]
@@ -590,6 +596,6 @@ def usage_check(session: Session, project: Project, reference_id: uuid.UUID) -> 
         previously_used=bool(rows),
         usage_count=len(rows),
         last_used_days_ago=last_used_days_ago,
-        previous_scenarios=previous,
+        previous_remakes=previous,
         project_reuse_policy=project.reuse_policy,
     )

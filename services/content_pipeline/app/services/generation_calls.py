@@ -1,9 +1,9 @@
 """Helpers to record `generation_calls` rows.
 
 Provider clients return an `LLMResponse` (or analogous future dataclass);
-the analyzer / image_gen / video_gen workers wrap the call with `record(...)`
-which writes the ledger row and bumps the project's `scenarios.generation_cost_usd`
-roll-up when a `scenario_id` is supplied.
+the remake workers wrap the call with `record(...)` which writes the
+ledger row and bumps the parent remake's `actual_cost_usd` roll-up when
+a `remake_id` is supplied.
 """
 
 from __future__ import annotations
@@ -17,7 +17,8 @@ from sqlmodel import Session
 
 from app.core.metrics import cp_generation_call_latency_seconds, cp_generation_calls_total
 from app.models.generation_calls import GenerationCall
-from app.models.scenarios import Scenario
+from app.models.remake_shots import RemakeShot
+from app.models.remakes import Remake
 
 
 def record(
@@ -31,6 +32,8 @@ def record(
     scenario_id: Optional[uuid.UUID] = None,
     scene_idx: Optional[int] = None,
     variant_id: Optional[uuid.UUID] = None,
+    remake_id: Optional[uuid.UUID] = None,
+    remake_shot_id: Optional[uuid.UUID] = None,
     request_id: Optional[str] = None,
     input_tokens: Optional[int] = None,
     output_tokens: Optional[int] = None,
@@ -43,12 +46,14 @@ def record(
     latency_ms: Optional[int] = None,
     error: Optional[str] = None,
 ) -> GenerationCall:
-    """Write one ledger row + roll up scenario cost when applicable."""
+    """Write one ledger row + roll up remake/shot cost when applicable."""
     row = GenerationCall(
         project_id=project_id,
         scenario_id=scenario_id,
         scene_idx=scene_idx,
         variant_id=variant_id,
+        remake_id=remake_id,
+        remake_shot_id=remake_shot_id,
         task_key=task_key,
         provider=provider,
         model_id=model_id,
@@ -67,18 +72,25 @@ def record(
     )
     session.add(row)
 
-    if scenario_id is not None and cost_usd:
-        # `scenarios.generation_cost_usd` is a Numeric column → Decimal in
-        # Python. Adding a float would crash SQLAlchemy's synchronize-by-
-        # evaluate path (Decimal + float is unsupported). Cast to Decimal
-        # via str() to avoid float-rounding artifacts in the conversion.
+    if cost_usd:
+        # Numeric columns are Decimal in Python; adding a float breaks
+        # SQLAlchemy's synchronize-by-evaluate path. Cast via str() to
+        # avoid float-rounding artifacts.
         cost_decimal = cost_usd if isinstance(cost_usd, Decimal) else Decimal(str(cost_usd))
-        session.exec(
-            update(Scenario)
-            .where(Scenario.id == scenario_id)
-            .values(generation_cost_usd=Scenario.generation_cost_usd + cost_decimal)
-            .execution_options(synchronize_session=False)
-        )
+        if remake_id is not None:
+            session.exec(
+                update(Remake)
+                .where(Remake.id == remake_id)
+                .values(actual_cost_usd=Remake.actual_cost_usd + cost_decimal)
+                .execution_options(synchronize_session=False)
+            )
+        if remake_shot_id is not None:
+            session.exec(
+                update(RemakeShot)
+                .where(RemakeShot.id == remake_shot_id)
+                .values(actual_cost_usd=RemakeShot.actual_cost_usd + cost_decimal)
+                .execution_options(synchronize_session=False)
+            )
 
     session.flush()
 

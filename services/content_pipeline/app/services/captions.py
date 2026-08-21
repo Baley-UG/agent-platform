@@ -2,9 +2,9 @@
 
 Order of precedence:
 1. plan_slot.caption_override / hashtags_override
-2. scenario.default_caption / default_hashtags
-3. derive from scenario_json.cta + scenario_json.hashtags (CP-M8)
-4. empty string + empty list
+2. remake.default_caption / default_hashtags (seeded from the source
+   reference's caption at remake creation)
+3. empty string + empty list
 
 Hashtags are joined to the caption with a leading newline. Returns the
 single text the publisher hands to IG/TT.
@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import List, Optional
 
 from app.models.plan_slots import PlanSlot
-from app.models.scenarios import Scenario
+from app.models.remakes import Remake
 
 
 def _coerce_hashtags(items: Optional[List[str]]) -> List[str]:
@@ -35,8 +35,8 @@ def _coerce_hashtags(items: Optional[List[str]]) -> List[str]:
     return out
 
 
-def resolve(slot: Optional[PlanSlot], scenario: Optional[Scenario]) -> str:
-    """Build the publish-ready caption string from slot + scenario fields."""
+def resolve(slot: Optional[PlanSlot], remake: Optional[Remake]) -> str:
+    """Build the publish-ready caption string from slot + remake fields."""
     caption: Optional[str] = None
     hashtags: List[str] = []
 
@@ -45,10 +45,10 @@ def resolve(slot: Optional[PlanSlot], scenario: Optional[Scenario]) -> str:
         if slot.hashtags_override:
             hashtags = _coerce_hashtags(slot.hashtags_override)
 
-    if scenario is not None:
-        caption = caption or (scenario.default_caption or None)
-        if not hashtags and scenario.default_hashtags:
-            hashtags = _coerce_hashtags(scenario.default_hashtags)
+    if remake is not None:
+        caption = caption or (remake.default_caption or None)
+        if not hashtags and remake.default_hashtags:
+            hashtags = _coerce_hashtags(remake.default_hashtags)
 
     body = (caption or "").strip()
     tail = " ".join(hashtags)

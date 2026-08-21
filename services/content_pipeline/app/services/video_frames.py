@@ -381,6 +381,117 @@ def detect_scene_boundaries(
     return sorted(set(out))
 
 
+# Shot-window planning — the cut list for a remake. Clamps tuned for
+# short-form ads; Kling O1 caps v2v input at 10s so long shots split.
+MIN_SHOT_SEC = 1.5
+MAX_SHOT_SEC = 8.0
+MAX_SHOTS = 14
+
+
+def plan_shot_windows(
+    boundaries: List[float],
+    duration: float,
+    *,
+    min_sec: float = MIN_SHOT_SEC,
+    max_sec: float = MAX_SHOT_SEC,
+    max_count: int = MAX_SHOTS,
+) -> List[Tuple[float, float]]:
+    """Turn detected shot boundaries + duration into `(start, end)` windows.
+
+    Merge windows shorter than `min_sec` into their predecessor (a burst
+    of rapid cuts collapses into one usable shot), split windows longer
+    than `max_sec`, then cap the count by merging the shortest neighbours.
+    Pure — unit-testable without ffmpeg.
+    """
+    if duration <= 0:
+        return []
+    inner = sorted({round(b, 3) for b in boundaries if 0.0 < b < duration})
+    bounds = [0.0, *inner, round(duration, 3)]
+
+    # merge shorts (tail merges backwards)
+    merged = [bounds[0]]
+    for b in bounds[1:-1]:
+        if b - merged[-1] >= min_sec:
+            merged.append(b)
+    merged.append(bounds[-1])
+    while len(merged) > 2 and merged[-1] - merged[-2] < min_sec:
+        del merged[-2]
+
+    # split longs
+    split: List[float] = [merged[0]]
+    for prev, cur in zip(merged, merged[1:]):
+        span = cur - prev
+        if span > max_sec:
+            pieces = int(span // max_sec) + 1
+            step = span / pieces
+            split.extend(prev + step * i for i in range(1, pieces))
+        split.append(cur)
+
+    # cap count
+    while len(split) - 1 > max_count:
+        spans = [(split[i + 1] - split[i], i) for i in range(len(split) - 1)]
+        _, shortest = min(spans)
+        drop = shortest + 1 if shortest + 1 < len(split) - 1 else shortest
+        del split[drop]
+
+    return [(round(split[i], 3), round(split[i + 1], 3)) for i in range(len(split) - 1)]
+
+
+def grab_frame(video_path: str, timestamp_sec: float, *, max_dim: int = DEFAULT_MAX_DIMENSION) -> bytes:
+    """Grab a single JPEG frame at `timestamp_sec`. Raises on failure."""
+    if not shutil.which("ffmpeg"):
+        raise FrameExtractError("ffmpeg binary not found on PATH")
+    with tempfile.TemporaryDirectory() as outdir:
+        out = os.path.join(outdir, "frame.jpg")
+        cmd = [
+            "ffmpeg", "-hide_banner", "-y", "-ss", f"{max(timestamp_sec, 0.0):.3f}",
+            "-i", video_path, "-frames:v", "1",
+            "-vf", f"scale='min({max_dim},iw)':-1", "-q:v", "3", out,
+        ]
+        proc = subprocess.run(cmd, check=False, timeout=120, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        if proc.returncode != 0 or not os.path.exists(out) or os.path.getsize(out) == 0:
+            tail = (proc.stderr or b"").decode("utf-8", "ignore").splitlines()[-4:]
+            raise FrameExtractError(f"grab_frame failed at {timestamp_sec}s: {' | '.join(tail)}")
+        with open(out, "rb") as fh:
+            return fh.read()
+
+
+def probe_meta(video_path: str) -> dict:
+    """ffprobe → {duration_sec, width, height, fps, has_audio}."""
+    if not shutil.which("ffprobe"):
+        return {"duration_sec": _probe_duration(video_path)}
+    try:
+        out = subprocess.check_output(
+            [
+                "ffprobe", "-v", "error", "-show_entries",
+                "format=duration:stream=codec_type,width,height,avg_frame_rate",
+                "-of", "json", video_path,
+            ],
+            stderr=subprocess.PIPE, timeout=30,
+        )
+        data = json.loads(out)
+    except (subprocess.CalledProcessError, ValueError, OSError):
+        return {"duration_sec": _probe_duration(video_path)}
+    fmt = data.get("format", {})
+    streams = data.get("streams", [])
+    video = next((s for s in streams if s.get("codec_type") == "video"), {})
+    has_audio = any(s.get("codec_type") == "audio" for s in streams)
+    fps = 0.0
+    rate = video.get("avg_frame_rate") or "0/1"
+    try:
+        num, den = rate.split("/")
+        fps = round(float(num) / float(den), 3) if float(den) else 0.0
+    except (ValueError, ZeroDivisionError):
+        fps = 0.0
+    return {
+        "duration_sec": float(fmt.get("duration") or 0.0),
+        "width": video.get("width"),
+        "height": video.get("height"),
+        "fps": fps,
+        "has_audio": has_audio,
+    }
+
+
 def s3_key_for_frame(
     project_id: uuid.UUID, parent_asset_id: uuid.UUID, idx: int
 ) -> str:

@@ -8,8 +8,8 @@ Runs five concurrent tasks:
   new stock arrived) so the auto_suggest list grows.
 - weekly auto-generator (Sunday 18:00 UTC) — for every project, ensure
   next week's weekly_plan exists.
-- stale-job alerter (hourly) — log a warning for any scenario stuck in
-  a `generating_*` status for >2 hours.
+- remake sweep (every minute) — re-drive every in-flight remake
+  through the reconciler so nothing hangs (self-healing).
 
 Idempotency: in-memory date/hour markers prevent double-runs across
 ticks within the same window. Restarts re-arm naturally.
@@ -28,10 +28,10 @@ from sqlmodel import select
 from app.core.config import settings
 from app.core.logging import logger
 from app.models.projects import Project
-from app.models.scenarios import Scenario
+from app.models.remakes import Remake
 from app.models.weekly_plans import WeeklyPlan
-from app.services import auto_generation as auto_gen_svc
 from app.services import queue
+from app.services import remake_reconciler
 from app.services import weekly_plans as plans_svc
 from app.services.database import session_scope
 
@@ -99,7 +99,6 @@ async def _plan_filler_loop() -> None:
 
 
 _AUTOGEN_RUN_DATES: Set[date] = set()
-_STALE_RUN_HOURS: Set[int] = set()
 
 
 async def _weekly_autogen_loop() -> None:
@@ -137,60 +136,36 @@ def _autogen_next_week(now: datetime) -> None:
                 logger.warning("weekly_autogen_project_failed", project=str(project.id), error=str(exc))
 
 
-async def _auto_gen_loop() -> None:
-    """Hourly — walk auto_generation_rules and spawn scenarios.
+async def _remake_sweep_loop() -> None:
+    """Every 60s — re-drive every in-flight remake through the reconciler.
 
-    Each rule's daily_quota caps how many it can fire across 24h; this
-    loop runs once per hour so quota=24 fires hourly, quota=3 fires three
-    times across the day in the first three runs and then noop's.
+    This is the self-healing guarantee: `advance()` reaps expired step
+    leases and enqueues anything whose dependencies are now met, so a
+    crashed worker or a dropped Redis message delays a step by at most
+    one sweep instead of hanging the remake forever (v1's failure mode).
+    Also emits `cp_remake_stuck` warnings for steps pending too long.
     """
     while not _shutdown.is_set():
         try:
             with session_scope() as session:
-                spawned = auto_gen_svc.run_all_due(session)
-                if spawned:
-                    logger.info("auto_gen_loop_spawned", count=spawned)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("auto_gen_loop_error", error=str(exc))
-
-        try:
-            await asyncio.wait_for(_shutdown.wait(), timeout=3600)
-        except asyncio.TimeoutError:
-            continue
-
-
-async def _stale_alerter_loop() -> None:
-    """Hourly — log scenarios stuck in `generating_*` / `composing` / `analyzing` for >2h."""
-    while not _shutdown.is_set():
-        try:
-            now = datetime.now(timezone.utc)
-            current_hour = now.hour
-            if current_hour not in _STALE_RUN_HOURS:
-                _STALE_RUN_HOURS.add(current_hour)
-                if len(_STALE_RUN_HOURS) >= 24:
-                    _STALE_RUN_HOURS.clear()
-                    _STALE_RUN_HOURS.add(current_hour)
-                with session_scope() as session:
-                    threshold = now - timedelta(hours=2)
-                    stmt = select(Scenario).where(
-                        Scenario.status.in_(
-                            ("generating_images", "generating_videos", "generating_audio", "composing", "analyzing")
-                        ),
-                        Scenario.updated_at < threshold,
-                    )
-                    stale = list(session.exec(stmt).all())
-                    for s in stale:
-                        logger.warning(
-                            "scenario_stale",
-                            scenario_id=str(s.id),
-                            status=s.status,
-                            updated_at=str(s.updated_at),
+                active = list(
+                    session.exec(
+                        select(Remake.id).where(
+                            Remake.status.in_(("analyzing", "rendering", "needs_attention"))
                         )
+                    ).all()
+                )
+            for remake_id in active:
+                try:
+                    with session_scope() as session:
+                        remake_reconciler.advance(session, remake_id)
+                except Exception as exc:  # noqa: BLE001 — one bad remake mustn't stop the sweep
+                    logger.warning("remake_sweep_advance_failed", remake_id=str(remake_id), error=str(exc))
         except Exception as exc:  # noqa: BLE001
-            logger.warning("stale_alerter_error", error=str(exc))
+            logger.warning("remake_sweep_error", error=str(exc))
 
         try:
-            await asyncio.wait_for(_shutdown.wait(), timeout=3600)
+            await asyncio.wait_for(_shutdown.wait(), timeout=60)
         except asyncio.TimeoutError:
             continue
 
@@ -211,8 +186,7 @@ async def run() -> None:
         _publisher_poller_loop(),
         _plan_filler_loop(),
         _weekly_autogen_loop(),
-        _auto_gen_loop(),
-        _stale_alerter_loop(),
+        _remake_sweep_loop(),
     )
     logger.info("content_pipeline_scheduler_stopped")
 

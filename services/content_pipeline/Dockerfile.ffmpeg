@@ -40,9 +40,8 @@ RUN useradd -m appuser && chown -R appuser:appuser /app
 USER appuser
 
 # Render container consumes ffmpeg-bound queues:
-#   - media_render   → compose pipeline (Phase 1)
-#   - frame_extract  → brand-video keyframe pass (Phase 3)
-#   - segment_cut    → repurpose source-segment cutting
+#   - remake_ffmpeg → probe / scene_detect / frame_extract / cut /
+#                    normalize / compose steps of the remake pipeline
 # All need the ffmpeg binary baked into this image. Other queues
 # (analyzer, image_gen, etc.) stay on the generic worker.
-CMD ["python", "-m", "app.worker", "--queues", "media_render", "frame_extract", "segment_cut"]
+CMD ["python", "-m", "app.worker", "--queues", "remake_ffmpeg"]

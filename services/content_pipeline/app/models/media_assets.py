@@ -64,6 +64,12 @@ class MediaAsset(SQLModel, table=True):
         default=None, sa_column=sa.Column(PGUUID(as_uuid=True), nullable=True)
     )
     parent_scene_idx: Optional[int] = Field(default=None, sa_column=sa.Column(sa.Integer, nullable=True))
+    # Remake vertical (CP-M10). Soft column, no FK (matches
+    # parent_scenario_id). The composed final video of a remake carries
+    # this so the publish/plan chain can trace it back.
+    parent_remake_id: Optional[uuid.UUID] = Field(
+        default=None, sa_column=sa.Column(PGUUID(as_uuid=True), nullable=True)
+    )
 
     # Versioning chain
     version: int = Field(default=1, sa_column=sa.Column(sa.Integer, nullable=False, server_default="1"))

@@ -19,7 +19,7 @@ from app.schemas.plans import (
     WeeklyPlanGenerateRequest,
     WeeklyPlanRead,
 )
-from app.schemas.render_variants import RenderVariantRead
+from app.schemas.remakes import RemakeRead
 from app.services import planner
 from app.services import weekly_plans as svc
 
@@ -161,18 +161,18 @@ stock_router = APIRouter(
 )
 
 
-@stock_router.get("/stock", response_model=List[RenderVariantRead])
+@stock_router.get("/stock", response_model=List[RemakeRead])
 def stock(
     preset: Optional[str] = Query(default=None),
     project: Project = Depends(get_project),
     session: Session = Depends(get_session),
-) -> List[RenderVariantRead]:
-    """Approved render_variants not yet pinned to an active plan slot."""
+) -> List[RemakeRead]:
+    """Done remakes not yet pinned to an active plan slot."""
     if preset:
         rows = planner.stock_for_preset(session, project.id, preset, limit=200)
     else:
         rows = planner.stock_for_project(session, project.id)
-    return [RenderVariantRead.model_validate(r) for r in rows]
+    return [RemakeRead.model_validate(r) for r in rows]
 
 
 @stock_router.get("/calendar")
@@ -183,19 +183,17 @@ def calendar(
     session: Session = Depends(get_session),
 ) -> List[dict]:
     """Slots in [from, to). Returns each slot enriched with the resolved
-    caption (slot override → scenario default → reference caption), the
-    variant's thumbnail asset id, and the upstream scenario/reference
-    ids so the calendar can render a content snapshot without firing
-    one HTTP call per event.
+    caption (slot override → remake default → reference caption) and
+    the upstream remake/reference ids so the calendar can render a
+    content snapshot without firing one HTTP call per event.
 
     Plain PlanSlotRead fields are preserved so existing callers keep
     working; the new fields are additive (`caption_resolved`,
-    `thumbnail_asset_id`, `scenario_id`, `reference_caption_snippet`).
+    `remake_id`, `reference_id`).
     """
     from app.models.content_references import ContentReference
     from app.models.plan_slots import PlanSlot
-    from app.models.render_variants import RenderVariant
-    from app.models.scenarios import Scenario
+    from app.models.remakes import Remake
     from sqlmodel import select
 
     stmt = (
@@ -209,56 +207,44 @@ def calendar(
     )
     slots = list(session.exec(stmt).all())
 
-    # Batch-load variants + scenarios + references so we don't N+1.
-    variant_ids = {s.variant_id for s in slots if s.variant_id}
-    variants_by_id: dict = {}
-    scenarios_by_id: dict = {}
+    # Batch-load remakes + references so we don't N+1. `variant_id`
+    # points at a remake id.
+    remake_ids = {s.variant_id for s in slots if s.variant_id}
+    remakes_by_id: dict = {}
     references_by_id: dict = {}
-    if variant_ids:
-        rvs = session.exec(select(RenderVariant).where(RenderVariant.id.in_(variant_ids))).all()
-        variants_by_id = {v.id: v for v in rvs}
-        scenario_ids = {v.scenario_id for v in rvs if v.scenario_id}
-        if scenario_ids:
-            scs = session.exec(select(Scenario).where(Scenario.id.in_(scenario_ids))).all()
-            scenarios_by_id = {s.id: s for s in scs}
-            ref_ids = {s.reference_id for s in scs if s.reference_id}
-            if ref_ids:
-                refs = session.exec(
-                    select(ContentReference).where(ContentReference.id.in_(ref_ids))
-                ).all()
-                references_by_id = {r.id: r for r in refs}
+    if remake_ids:
+        rms = session.exec(select(Remake).where(Remake.id.in_(remake_ids))).all()
+        remakes_by_id = {r.id: r for r in rms}
+        ref_ids = {r.reference_id for r in rms if r.reference_id}
+        if ref_ids:
+            refs = session.exec(
+                select(ContentReference).where(ContentReference.id.in_(ref_ids))
+            ).all()
+            references_by_id = {r.id: r for r in refs}
 
     out: List[dict] = []
     for slot in slots:
         base = PlanSlotRead.model_validate(slot).model_dump(mode="json")
-        # Resolve caption + hashtags by precedence so the panel renders
-        # the actual text that would publish (or hints "needs caption").
-        variant = variants_by_id.get(slot.variant_id) if slot.variant_id else None
-        scenario = (
-            scenarios_by_id.get(variant.scenario_id) if variant and variant.scenario_id else None
-        )
+        remake = remakes_by_id.get(slot.variant_id) if slot.variant_id else None
         reference = (
-            references_by_id.get(scenario.reference_id) if scenario and scenario.reference_id else None
+            references_by_id.get(remake.reference_id) if remake and remake.reference_id else None
         )
 
         caption = (
             slot.caption_override
-            or (scenario.default_caption if scenario else None)
+            or (remake.default_caption if remake else None)
             or (reference.caption if reference else None)
         )
         hashtags = (
             list(slot.hashtags_override or [])
-            or list((scenario.default_hashtags if scenario else None) or [])
+            or list((remake.default_hashtags if remake else None) or [])
             or list((reference.hashtags if reference else None) or [])
         )
 
         base["caption_resolved"] = caption
         base["hashtags_resolved"] = hashtags or None
-        base["thumbnail_asset_id"] = (
-            str(variant.thumbnail_asset_id) if variant and variant.thumbnail_asset_id else None
-        )
-        base["scenario_id"] = str(variant.scenario_id) if variant and variant.scenario_id else None
-        base["reference_id"] = str(scenario.reference_id) if scenario and scenario.reference_id else base.get("reference_id")
+        base["remake_id"] = str(remake.id) if remake else None
+        base["reference_id"] = str(remake.reference_id) if remake and remake.reference_id else base.get("reference_id")
         out.append(base)
 
     return out

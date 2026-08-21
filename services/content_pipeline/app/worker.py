@@ -28,17 +28,15 @@ from app.core.logging import logger
 # a lightweight vision-LLM job (Phase 1 brand asset library); piggybacks
 # on the generic worker so admins don't have to provision yet another
 # container.
+# Generic worker (no ffmpeg): remake AI + analysis steps, plus publish
+# and the planner. The ffmpeg container consumes `remake_ffmpeg`.
 DEFAULT_QUEUES = [
-    "analyzer",
-    "brand_asset_tag",
-    "director",
-    "image_gen",
-    "video_gen",
-    "audio_gen",
+    "remake_ai",
+    "remake_analysis",
     "publish",
     "planner",
 ]
-ALL_QUEUES = DEFAULT_QUEUES + ["media_render", "frame_extract", "segment_cut"]
+ALL_QUEUES = DEFAULT_QUEUES + ["remake_ffmpeg"]
 
 
 def _parse_args(argv: List[str]) -> argparse.Namespace:

@@ -122,11 +122,10 @@ class ReferenceRead(BaseModel):
     status: str
     imported_by: Optional[str]
     imported_at: datetime
-    # How many scenarios already reference this row. Drives the
-    # "has scenario" badge on the references grid; admins can spot
-    # un-used candidates at a glance and avoid re-using the same
-    # reference when reuse_policy='warn'. Filled in by `svc.to_read`.
-    scenarios_count: int = 0
+    # How many remakes already spawned from this row. Drives the
+    # "already remade" badge on the references grid so admins can spot
+    # un-used candidates at a glance. Filled in by `svc.to_read`.
+    remakes_count: int = 0
 
     model_config = {"from_attributes": True, "populate_by_name": True}
 
@@ -138,5 +137,5 @@ class UsageCheck(BaseModel):
     previously_used: bool
     usage_count: int
     last_used_days_ago: Optional[int]
-    previous_scenarios: List[dict]
+    previous_remakes: List[dict]
     project_reuse_policy: str

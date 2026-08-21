@@ -34,6 +34,8 @@ def create_initial(
     duration_sec: Optional[float] = None,
     parent_scenario_id: Optional[uuid.UUID] = None,
     parent_scene_idx: Optional[int] = None,
+    parent_remake_id: Optional[uuid.UUID] = None,
+    source_timestamp_sec: Optional[float] = None,
     metadata: Optional[dict] = None,
 ) -> MediaAsset:
     asset = MediaAsset(
@@ -47,6 +49,8 @@ def create_initial(
         duration_sec=duration_sec,
         parent_scenario_id=parent_scenario_id,
         parent_scene_idx=parent_scene_idx,
+        parent_remake_id=parent_remake_id,
+        source_timestamp_sec=source_timestamp_sec,
         metadata_json=metadata,
         version=1,
         previous_version_id=None,

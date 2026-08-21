@@ -103,37 +103,31 @@ def update(
 
 
 @router.get(
-    "/{reference_id}/recommended-variants",
-    summary="Default target_variants the admin panel can pre-fill",
+    "/{reference_id}/recommended-preset",
+    summary="Default output preset the remake-create form can pre-fill",
 )
-def recommended_variants(
+def recommended_preset(
     reference_id: uuid.UUID,
     project: Project = Depends(get_project),
     session: Session = Depends(get_session),
 ) -> dict:
-    """Return the `target_variants` list that
-    `POST /scenarios` would default to if the caller omitted the field.
+    """Return the output `preset_key` a remake would default to.
 
-    The admin panel calls this once when the user picks a reference, so
-    the scenario-create form arrives pre-filled with a sensible default
-    (e.g. carousel → ig_feed_45) and the user only has to override when
-    they actually want something different.
+    The panel calls this when the user picks a reference so the
+    New-Remake form arrives pre-filled (e.g. carousel → ig_feed_45).
     """
-    from app.services import scenarios as scenarios_svc
+    from app.services import presets as presets_svc
 
     ref = svc.get(session, project.id, reference_id)
     meta = ref.metadata_json or {}
     media_type = meta.get("media_type")
     product_type = meta.get("product_type") or ""
-    variants = scenarios_svc.derive_default_target_variants(ref)
-    aspect_groups = scenarios_svc._derive_aspect_groups(variants)
+    preset_key = presets_svc.recommend_preset_for_reference(ref)
 
-    # Human-readable explanation so the panel can show e.g.
-    # "Carousel post → recommended 4:5 feed"
     if (product_type or "").lower() in ("clips", "reels"):
         reason = "reel → 9:16 vertical video"
     elif media_type == 8:
-        reason = "carousel → 4:5 feed slideshow"
+        reason = "carousel → 4:5 feed post"
     elif media_type == 1:
         reason = "photo → 4:5 feed post"
     elif media_type == 2:
@@ -142,8 +136,7 @@ def recommended_variants(
         reason = "unknown source → 9:16 reel (safe default)"
 
     return {
-        "target_variants": variants,
-        "aspect_groups": aspect_groups,
+        "preset_key": preset_key,
         "source_media_type": media_type,
         "source_product_type": product_type or None,
         "reason": reason,
@@ -275,7 +268,7 @@ async def curate(
 ) -> dict:
     """Run the AI curator over this reference.
 
-    Calls the LLM (via the project's `scenario_analysis` route, since the
+    Calls the LLM (via the project's `remake_plan` route, since the
     curator is just an LLM-backed scoring task), writes
     `curator_score` + `curator_reason` on the row, returns the new values.
     Fail-open: returns `score=null` when no LLM route is configured.

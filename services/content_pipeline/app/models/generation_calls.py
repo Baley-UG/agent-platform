@@ -25,6 +25,7 @@ class GenerationCall(SQLModel, table=True):
     __table_args__ = (
         sa.Index("ix_generation_calls_project_created", "project_id", "created_at"),
         sa.Index("ix_generation_calls_scenario", "scenario_id"),
+        sa.Index("ix_generation_calls_remake", "remake_id"),
         sa.Index("ix_generation_calls_provider_model", "provider", "model_id", "created_at"),
         {"schema": SCHEMA_NAME},
     )
@@ -43,6 +44,10 @@ class GenerationCall(SQLModel, table=True):
 
     scenario_id: Optional[uuid.UUID] = Field(default=None, sa_column=sa.Column(PGUUID(as_uuid=True), nullable=True))
     scene_idx: Optional[int] = Field(default=None, sa_column=sa.Column(sa.Integer, nullable=True))
+    # Remake vertical (CP-M10) attribution — soft columns, no FK, same
+    # as scenario_id. Lets record() bill a remake without a scenario.
+    remake_id: Optional[uuid.UUID] = Field(default=None, sa_column=sa.Column(PGUUID(as_uuid=True), nullable=True))
+    remake_shot_id: Optional[uuid.UUID] = Field(default=None, sa_column=sa.Column(PGUUID(as_uuid=True), nullable=True))
     variant_id: Optional[uuid.UUID] = Field(default=None, sa_column=sa.Column(PGUUID(as_uuid=True), nullable=True))
 
     task_key: str = Field(sa_column=sa.Column(sa.String(64), nullable=False))

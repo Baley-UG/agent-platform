@@ -13,8 +13,9 @@ Fill strategies (`posting_strategy.fill_strategy`):
 - `auto_fill`  — pop the best stock variant and assign it. FIFO over
   approved variants of the matching preset.
 
-Stock view: a virtual queryset over `render_variants` where status='approved'
-and the variant isn't already pinned to a non-failed/non-skipped slot.
+Stock view: a virtual queryset over `remakes` where status='done' and
+the remake isn't already pinned to a non-failed/non-skipped slot.
+`plan_slots.variant_id` now points at a remake id.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ from sqlmodel import Session, select
 
 from app.models.plan_slots import CONTENT_TYPES, PlanSlot
 from app.models.posting_strategy import PostingStrategy
-from app.models.render_variants import RenderVariant
+from app.models.remakes import Remake
 from app.models.weekly_plans import WeeklyPlan
 
 
@@ -192,40 +193,42 @@ def respect_min_gap(
 
 def stock_for_preset(
     session: Session, project_id: uuid.UUID, preset_key: str, *, limit: int = 50
-) -> List[RenderVariant]:
-    """Approved variants for `preset_key` not yet pinned to an active slot."""
+) -> List[Remake]:
+    """Done remakes for `preset_key` not yet pinned to an active slot."""
     pinned_subq = select(PlanSlot.variant_id).where(
         PlanSlot.project_id == project_id,
         PlanSlot.variant_id.is_not(None),
         PlanSlot.status.notin_(("failed", "skipped")),
     )
     stmt = (
-        select(RenderVariant)
+        select(Remake)
         .where(
-            RenderVariant.preset_key == preset_key,
-            RenderVariant.status == "approved",
-            RenderVariant.id.notin_(pinned_subq),
+            Remake.preset_key == preset_key,
+            Remake.status == "done",
+            Remake.final_media_asset_id.is_not(None),
+            Remake.id.notin_(pinned_subq),
         )
-        .order_by(RenderVariant.approved_at.asc().nulls_last(), RenderVariant.created_at.asc())
+        .order_by(Remake.final_approved_at.asc().nulls_last(), Remake.created_at.asc())
         .limit(limit)
     )
     return list(session.exec(stmt).all())
 
 
-def stock_for_project(session: Session, project_id: uuid.UUID) -> List[RenderVariant]:
-    """All approved+unpinned variants for a project, any preset."""
+def stock_for_project(session: Session, project_id: uuid.UUID) -> List[Remake]:
+    """All done+unpinned remakes for a project, any preset."""
     pinned_subq = select(PlanSlot.variant_id).where(
         PlanSlot.project_id == project_id,
         PlanSlot.variant_id.is_not(None),
         PlanSlot.status.notin_(("failed", "skipped")),
     )
     stmt = (
-        select(RenderVariant)
+        select(Remake)
         .where(
-            RenderVariant.status == "approved",
-            RenderVariant.id.notin_(pinned_subq),
+            Remake.status == "done",
+            Remake.final_media_asset_id.is_not(None),
+            Remake.id.notin_(pinned_subq),
         )
-        .order_by(RenderVariant.approved_at.asc().nulls_last(), RenderVariant.created_at.asc())
+        .order_by(Remake.final_approved_at.asc().nulls_last(), Remake.created_at.asc())
     )
     return list(session.exec(stmt).all())
 
@@ -241,7 +244,7 @@ def suggest_for_slot(
     return [v.id for v in candidates]
 
 
-def auto_fill_slot(session: Session, slot: PlanSlot) -> Optional[RenderVariant]:
+def auto_fill_slot(session: Session, slot: PlanSlot) -> Optional[Remake]:
     """Pop the best stock variant for this slot and pin it (auto_fill mode)."""
     candidates = stock_for_preset(session, slot.project_id, slot.variant_preset, limit=1)
     if not candidates:

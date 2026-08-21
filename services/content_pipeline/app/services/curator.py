@@ -85,7 +85,7 @@ async def curate(
     and returns (score, reason). Returns (None, None) when no LLM is
     configured (fail-open — admin can score manually)."""
     try:
-        route = model_router.resolve(session, "scenario_analysis", project_id=project.id)
+        route = model_router.resolve(session, "remake_plan", project_id=project.id)
     except model_router.NoRouteError:
         return None, None
 

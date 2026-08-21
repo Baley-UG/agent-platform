@@ -70,3 +70,21 @@ def aspect_dimensions(aspect: str) -> tuple[int, int]:
 
 def variant_aspect(variant_key: str) -> Optional[str]:
     return VARIANT_ASPECT_GROUP.get(variant_key)
+
+
+def recommend_preset_for_reference(reference) -> str:
+    """Pick a sensible default output preset from a reference's source kind.
+
+    A remake targets ONE preset. Reels/clips → `ig_reels` (9:16); feed
+    video / carousel / photo → `ig_feed_45` (4:5); anything unknown →
+    `ig_reels`, the most ubiquitous short-form slot.
+    """
+    meta = (getattr(reference, "metadata_json", None) or {})
+    media_type = meta.get("media_type")
+    product_type = (meta.get("product_type") or "").lower()
+
+    if product_type in ("clips", "reels"):
+        return "ig_reels"
+    if media_type in (1, 2, 8):  # photo / video / carousel feed post
+        return "ig_feed_45"
+    return "ig_reels"

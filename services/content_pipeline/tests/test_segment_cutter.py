@@ -9,12 +9,12 @@ from __future__ import annotations
 import pytest
 
 from app.services import segment_cutter as cutter
-from app.services.segments import Segment
+from app.services.segment_cutter import Cut
 
 
 def _segments(*windows):
     return [
-        Segment(idx=i + 1, start_sec=start, end_sec=end)
+        Cut(idx=i + 1, start_sec=start, end_sec=end)
         for i, (start, end) in enumerate(windows)
     ]
 
