@@ -128,12 +128,13 @@ _PLAN_SYSTEM = (
     "4. static product beauty shot → 'reframe'.\n"
     "5. pure competitor CTA card → 'drop'.\n"
     "For each shot also propose replacement on-screen text in our voice (or none).\n"
-    "Globally decide keep vs re-voice audio (re-voice ONLY if the VO names the competitor).\n"
+    "Audio: the source video's own audio is ALWAYS kept — do not strip it. "
+    "You do not decide audio; the operator changes it later if they want.\n"
     "Return STRICT JSON only:\n"
     '{"shots": [{"idx": <int>, "technique": "copy|erase|restyle|reframe|drop", '
     '"reason": "<short>", "prompt": "<for erase/restyle/reframe, else null>", '
     '"on_screen_text": "<our line or empty>"}], '
-    '"audio_mode": "keep|duck|drop", "voice_script": "<or null>", "cta_text": "<or null>"}\n'
+    '"cta_text": "<or null>"}\n'
     "No prose, no fences."
 )
 
@@ -199,8 +200,10 @@ def _author_plan(session: Session, step: RemakeStep, remake: Remake) -> dict:
         session.add(shot)
 
     remake.plan_json = {
-        "audio_mode": plan.get("audio_mode", "keep"),
-        "voice_script": plan.get("voice_script"),
+        # Source audio is kept by default — most remakes ride the
+        # competitor's original (trending) sound. The operator flips this
+        # to duck/drop in the plan editor when they want our own audio.
+        "audio_mode": "keep",
         "cta_text": plan.get("cta_text"),
         "brand_findings": [
             {"idx": s.idx, "logos": (s.tags or {}).get("brand_visibility", {}).get("logos")}
