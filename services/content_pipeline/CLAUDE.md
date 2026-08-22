@@ -65,7 +65,8 @@ left off.
 | CP-M6.5 + CP-M8 (selective) | Captions, aggregate progress, dedup, curator | ✅ done | e11aa13 |
 | CP-M8.5 | Auth, users, project memberships (in content_pipeline) | ❌ superseded by CP-M9 | 131e23b |
 | CP-M9 | Auth centralized in main `app/`; gateway proxy; CP auth removed | ✅ done | 4b18615 |
-| CP-R1 | `repurpose` mode — cut real segments from the source reel | ✅ done | — |
+| CP-R1 | `repurpose` mode — cut real segments from the source reel | ⛔ superseded by CP-M10 | — |
+| CP-M10 | Remake vertical — replaces the scenario pipeline entirely. remakes/remake_shots/remake_steps + idempotent reconciler + 3 queues (remake_ffmpeg/ai/analysis) + FalQueueClient. copy/erase/restyle/reframe techniques, 2 human gates, source-audio kept by default. Migration 0012 drops scenarios/scene_renders/render_variants/reference_usages/auto_generation. | ✅ done | b36bf90 |
 | CP-M8 (rest) | pgvector embeddings, webhooks, outpaint, Suno, etc. | ⏳ deferred | — |
 
 Status legend: ⏳ not started · 🔄 in progress · ✅ done · 🚧 blocked.
