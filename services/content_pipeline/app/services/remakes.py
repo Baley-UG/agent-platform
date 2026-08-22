@@ -29,7 +29,7 @@ from app.services import remake_cost as cost_svc
 
 # In Phase 1 the generative techniques (restyle/reframe) are not wired;
 # the planner's suggestions are clamped to erase at approval time.
-PHASE1_ONLY = True
+PHASE1_ONLY = False  # Phase 2: restyle + reframe are wired
 
 
 # ---------------------------------------------------------------------------

@@ -120,3 +120,22 @@ def prev_output_key(session: Session, step: RemakeStep) -> Optional[str]:
 
 def tempdir(prefix: str = "remake-") -> str:
     return tempfile.mkdtemp(prefix=prefix)
+
+
+def shot_step_output(session: Session, shot_id, kind: str) -> Optional[str]:
+    """The `output.s3_key` of a specific succeeded step of a shot.
+
+    Used where `prev_output_key` (highest-seq) is ambiguous — e.g. the
+    reframe `i2v` step needs BOTH its start and end keyframe edits, which
+    share a seq, so it resolves them by kind rather than by seq order.
+    """
+    row = session.exec(
+        select(RemakeStep).where(
+            RemakeStep.shot_id == shot_id,
+            RemakeStep.kind == kind,
+            RemakeStep.status == "succeeded",
+        )
+    ).first()
+    if row and row.output and row.output.get("s3_key"):
+        return row.output["s3_key"]
+    return None
