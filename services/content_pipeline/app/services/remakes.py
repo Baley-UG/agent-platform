@@ -198,6 +198,11 @@ def approve_plan(session: Session, remake: Remake, *, approved_by: Optional[str]
     shots = shots_for(session, remake.id)
     if not shots:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="no shots to render")
+    if all(s.technique == "drop" for s in shots):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="every shot is dropped — keep at least one shot to render",
+        )
 
     if PHASE1_ONLY:
         for shot in shots:
@@ -221,6 +226,43 @@ def approve_plan(session: Session, remake: Remake, *, approved_by: Optional[str]
 # ---------------------------------------------------------------------------
 # retry / reject / final (Gate 2)
 # ---------------------------------------------------------------------------
+
+
+def retry(session: Session, remake: Remake) -> Remake:
+    """needs_attention → reset EVERY failed step (global + per-shot) and
+    re-drive.
+
+    This is the recovery path for failures the shot-scoped `retry_shot`
+    can't reach: a global analysis step (scene_detect / tag_shots /
+    author_plan) or the global `compose`. Restores the remake to the
+    correct phase (analysis vs render, keyed on plan_approved_at) so the
+    reconciler picks up exactly where it stalled.
+    """
+    if remake.status != "needs_attention":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"retry only applies to needs_attention (status={remake.status})",
+        )
+    failed = session.exec(
+        select(RemakeStep).where(
+            RemakeStep.remake_id == remake.id, RemakeStep.status == "failed"
+        )
+    ).all()
+    if not failed:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="no failed steps to retry")
+    for s in failed:
+        s.status = "pending"
+        s.attempts = 0
+        s.error = None
+        s.lease_expires_at = None
+        session.add(s)
+    remake.error = None
+    remake.status = "rendering" if remake.plan_approved_at is not None else "analyzing"
+    session.add(remake)
+    session.flush()
+    remake_reconciler.advance(session, remake.id)
+    session.refresh(remake)
+    return remake
 
 
 def retry_shot(session: Session, remake: Remake, shot_id: uuid.UUID) -> Remake:

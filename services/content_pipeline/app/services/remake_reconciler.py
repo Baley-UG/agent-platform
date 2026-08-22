@@ -33,27 +33,30 @@ from app.models.remakes import REMAKE_FROZEN_STATUSES, Remake
 from app.services import queue as queue_svc
 
 # How long a step may sit queued/running before the sweep re-drives it.
-# Generous — matches the queue timeouts plus slack for provider polling.
+# CRITICAL: every lease must be comfortably LARGER than the handler's own
+# timeout, or a healthy-but-slow job gets reaped mid-run — burning a
+# retry and risking a double (paid) provider call. These are ~2× the
+# provider/subprocess timeouts in the workers.
 _LEASE_SECONDS: Dict[str, int] = {
-    "probe": 300,
-    "scene_detect": 900,
-    "frame_extract": 900,
-    "asr": 900,
-    "tag_shots": 900,
-    "author_plan": 900,
-    "cut": 1800,
-    "erase": 1200,
-    "restyle": 1200,
-    "keyframe_edit_start": 900,
-    "keyframe_edit_end": 900,
-    "i2v": 1200,
-    "normalize": 1800,
-    "tts": 600,
-    "lipsync": 1200,
-    "compose": 2400,
-    "upscale": 1200,
+    "probe": 600,
+    "scene_detect": 1800,
+    "frame_extract": 1800,
+    "asr": 1800,          # handler timeout 900
+    "tag_shots": 1200,
+    "author_plan": 1200,
+    "cut": 3600,          # ffmpeg subprocess timeout 1800
+    "erase": 2400,        # fal timeout 1200
+    "restyle": 2400,      # fal timeout 1200
+    "keyframe_edit_start": 1200,   # fal timeout 600
+    "keyframe_edit_end": 1200,
+    "i2v": 2400,          # fal timeout 1200
+    "normalize": 3600,
+    "tts": 1200,
+    "lipsync": 2400,
+    "compose": 3600,
+    "upscale": 2400,
 }
-_DEFAULT_LEASE = 900
+_DEFAULT_LEASE = 1800
 
 # One worker entrypoint per queue; the worker dispatches on step.kind.
 _WORKER_FOR_QUEUE = {
@@ -68,6 +71,24 @@ _STUCK_AFTER = timedelta(minutes=30)
 
 def _lease_for(kind: str) -> int:
     return _LEASE_SECONDS.get(kind, _DEFAULT_LEASE)
+
+
+def _acquire_lock(session: Session, remake_id: uuid.UUID) -> None:
+    """Serialize concurrent advance() calls for one remake.
+
+    A transaction-scoped Postgres advisory lock held for the WHOLE pass
+    (released only at the single commit at the end). This replaces the
+    old `SELECT ... FOR UPDATE`, which was released by the mid-loop
+    commits and let a worker's advance() interleave with the sweep's —
+    double-enqueuing the same step. No-op on non-Postgres (unit tests).
+    """
+    from sqlalchemy import text
+
+    bind = session.get_bind()
+    if getattr(bind.dialect, "name", "") != "postgresql":
+        return
+    key = int.from_bytes(remake_id.bytes[:8], "big", signed=True)
+    session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": key})
 
 
 def _scope_key(step: RemakeStep):
@@ -112,21 +133,27 @@ def _derive_shot_status(shot: RemakeShot, steps: List[RemakeStep]) -> str:
 
 
 def advance(session: Session, remake_id: uuid.UUID) -> None:
-    """Drive one remake forward by one reconciliation pass."""
-    remake = session.exec(
-        select(Remake).where(Remake.id == remake_id).with_for_update()
-    ).first()
-    if remake is None:
-        return
-    # Never cross a human gate or a terminal state on our own.
-    if remake.status in REMAKE_FROZEN_STATUSES:
+    """Drive one remake forward by one reconciliation pass.
+
+    The whole pass runs in ONE transaction under an advisory lock, then
+    a single commit, then enqueue. Enqueue AFTER commit is safe because
+    the worker fences on `status == "queued"` (see remake_common.run_step)
+    and the job_id dedups duplicate deliveries; a failed enqueue leaves
+    the row `queued` with a lease that the sweep reaps and re-drives.
+    """
+    _acquire_lock(session, remake_id)
+
+    remake = session.get(Remake, remake_id)
+    if remake is None or remake.status in REMAKE_FROZEN_STATUSES:
+        session.commit()  # release the advisory lock
         return
 
     steps = list(session.exec(select(RemakeStep).where(RemakeStep.remake_id == remake_id)).all())
     shots = list(session.exec(select(RemakeShot).where(RemakeShot.remake_id == remake_id)).all())
     now = utcnow()
 
-    # 1) Reap expired leases.
+    # 1) Reap expired leases (dead/dropped workers). Leases are >> handler
+    #    timeouts, so a healthy job is never reaped mid-run.
     for s in steps:
         if s.status in ("queued", "running") and s.lease_expires_at and s.lease_expires_at < now:
             s.attempts += 1
@@ -135,9 +162,7 @@ def advance(session: Session, remake_id: uuid.UUID) -> None:
             if s.status == "failed" and not s.error:
                 s.error = "step lease expired (worker crashed or dropped)"
             session.add(s)
-    session.flush()
 
-    # Group steps by scope + compute per-shot readiness for compose deps.
     by_scope: Dict[Optional[uuid.UUID], List[RemakeStep]] = {}
     for s in steps:
         by_scope.setdefault(_scope_key(s), []).append(s)
@@ -147,33 +172,22 @@ def advance(session: Session, remake_id: uuid.UUID) -> None:
         if s.shot_id is not None and s.shot_id in shot_steps:
             shot_steps[s.shot_id].append(s)
 
+    non_drop = [sh for sh in shots if sh.technique != "drop"]
     shots_ready: Dict[uuid.UUID, bool] = {}
-    for sh in shots:
-        if sh.technique == "drop":
-            continue
+    for sh in non_drop:
         st = shot_steps.get(sh.id, [])
         shots_ready[sh.id] = bool(st) and all(x.status in ("succeeded", "skipped") for x in st)
 
-    # 2) Enqueue runnable pending steps. Commit BEFORE enqueue so the
-    #    worker always sees the row as queued; a failed enqueue rolls the
-    #    row back to pending for the next sweep.
+    # 2) Mark runnable pending steps queued (collect for post-commit enqueue).
+    to_enqueue: List[tuple] = []
     for s in steps:
         if s.status != "pending" or not _deps_met(s, by_scope, shots_ready):
             continue
         s.status = "queued"
         s.lease_expires_at = now + timedelta(seconds=_lease_for(s.kind))
         session.add(s)
-        session.commit()
         qname = STEP_QUEUES.get(s.kind, "remake_ai")
-        func = _WORKER_FOR_QUEUE[qname]
-        try:
-            queue_svc.enqueue(qname, func, str(s.id), job_id=f"rmstep_{s.id}_{s.attempts}")
-        except Exception as exc:  # noqa: BLE001 — Redis down: leave for the sweep
-            s.status = "pending"
-            s.lease_expires_at = None
-            session.add(s)
-            session.commit()
-            logger.warning("remake_step_enqueue_failed", step_id=str(s.id), kind=s.kind, error=str(exc))
+        to_enqueue.append((qname, _WORKER_FOR_QUEUE[qname], str(s.id), f"rmstep_{s.id}_{s.attempts}"))
 
     # 3) Derive shot statuses.
     for sh in shots:
@@ -182,28 +196,44 @@ def advance(session: Session, remake_id: uuid.UUID) -> None:
             sh.status = new_status
             session.add(sh)
 
-    # 4) Derive remake status.
+    # 4) Derive remake status — PHASE-AWARE. `plan_approved_at` is the
+    #    phase signal: unset → analysis phase, set → render phase. Without
+    #    this, an analysis-stage failure flips status to needs_attention
+    #    and the next pass would wrongly take the render branch (and could
+    #    skip Gate 1 entirely).
     any_failed = any(s.status == "failed" for s in steps)
     author_plan = next((s for s in steps if s.kind == "author_plan"), None)
     compose = next((s for s in steps if s.kind == "compose"), None)
+    render_phase = remake.plan_approved_at is not None
 
-    new_remake_status = remake.status
-    if remake.status == "analyzing":
-        # Phase boundary: once the plan is authored, hand to the operator.
+    new_status = remake.status
+    if not render_phase:
+        # Analysis phase.
         if author_plan and author_plan.status == "succeeded" and shots:
-            new_remake_status = "plan_review"
+            new_status = "plan_review"
         elif any_failed:
-            new_remake_status = "needs_attention"
-    elif remake.status in ("rendering", "needs_attention"):
-        if compose and compose.status == "succeeded":
-            new_remake_status = "final_review"
-        elif any_failed:
-            new_remake_status = "needs_attention"
+            new_status = "needs_attention"
+            if not remake.error:
+                failed = next((s for s in steps if s.status == "failed"), None)
+                remake.error = f"analysis step '{failed.kind}' failed: {(failed.error or '')[:300]}" if failed else "analysis failed"
         else:
-            new_remake_status = "rendering"
+            new_status = "analyzing"
+    else:
+        # Render phase.
+        if compose and compose.status == "succeeded":
+            new_status = "final_review"
+        elif not non_drop:
+            # All shots dropped — nothing to compose. Defensive; also
+            # guarded at approve_plan.
+            new_status = "needs_attention"
+            remake.error = "every shot is dropped — nothing to render"
+        elif any_failed:
+            new_status = "needs_attention"
+        else:
+            new_status = "rendering"
 
-    if new_remake_status != remake.status:
-        remake.status = new_remake_status
+    if new_status != remake.status:
+        remake.status = new_status
         session.add(remake)
 
     # 5) Stuck detection (observability only).
@@ -211,4 +241,14 @@ def advance(session: Session, remake_id: uuid.UUID) -> None:
         if s.status == "pending" and s.updated_at and (now - s.updated_at) > _STUCK_AFTER:
             logger.warning("cp_remake_stuck", remake_id=str(remake_id), step_id=str(s.id), kind=s.kind)
 
+    # Single commit ends the transaction and releases the advisory lock.
     session.commit()
+
+    # 6) Enqueue AFTER commit. The worker fences on status=="queued" and
+    #    the job_id dedups; a failed enqueue leaves the row queued for the
+    #    sweep's lease reap.
+    for qname, func, step_id, job_id in to_enqueue:
+        try:
+            queue_svc.enqueue(qname, func, step_id, job_id=job_id)
+        except Exception as exc:  # noqa: BLE001 — Redis down: the sweep re-drives
+            logger.warning("remake_step_enqueue_failed", step_id=step_id, kind=qname, error=str(exc))

@@ -84,6 +84,13 @@ class RemakeShot(SQLModel, table=True):
     )
     # The final NORMALIZED clip for this shot (fed straight to compose).
     output_s3_key: Optional[str] = Field(default=None, sa_column=sa.Column(sa.String(512), nullable=True))
+    # The clip's PROBED duration (not the planned window) — the cut is
+    # re-encoded to a fixed fps and runs a frame or two long. Compose
+    # windows captions + computes offsets from this so the timeline
+    # stays in sync across many shots.
+    output_duration_sec: Optional[float] = Field(
+        default=None, sa_column=sa.Column(sa.Numeric(8, 3), nullable=True)
+    )
 
     est_cost_usd: Optional[float] = Field(default=None, sa_column=sa.Column(sa.Numeric(10, 4), nullable=True))
     actual_cost_usd: float = Field(

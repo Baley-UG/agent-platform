@@ -134,7 +134,10 @@ def _cut(session: Session, step: RemakeStep, remake: Remake) -> dict:
         raise RuntimeError("cut produced no output")
     out = results[0]
     if shot.technique == "copy":
+        # copy: the cut IS the shot output — stamp the PROBED duration so
+        # compose windows captions against the real (re-encoded) length.
         shot.output_s3_key = out["s3_key"]
+        shot.output_duration_sec = out["duration_sec"]
         session.add(shot)
         session.flush()
     return {"s3_key": out["s3_key"], "duration_sec": out["duration_sec"]}
@@ -171,6 +174,7 @@ def _normalize(session: Session, step: RemakeStep, remake: Remake) -> dict:
     if not results:
         raise RuntimeError("normalize produced no output")
     shot.output_s3_key = results[0]["s3_key"]
+    shot.output_duration_sec = results[0]["duration_sec"]
     session.add(shot)
     session.flush()
     return {"s3_key": results[0]["s3_key"], "duration_sec": results[0]["duration_sec"]}

@@ -47,6 +47,14 @@ def run_step(step_id: str, handlers: dict[str, Handler]) -> dict:
         if remake is None:
             return {"ok": False, "error": "remake not found"}
 
+        # START FENCE: only run if the step is still the one the
+        # reconciler queued. A duplicate delivery (same job_id re-pushed)
+        # or a step the sweep already reaped will not be `queued` here →
+        # no-op. This is what makes enqueue-after-commit + at-least-once
+        # RQ delivery safe against double (paid) provider calls.
+        if step.status != "queued":
+            return {"ok": True, "skipped": f"status={step.status}", "step_id": step_id}
+
         handler = handlers.get(step.kind)
         if handler is None:
             step.status = "failed"
@@ -62,12 +70,16 @@ def run_step(step_id: str, handlers: dict[str, Handler]) -> dict:
         try:
             output = handler(session, step, remake)
         except Exception as exc:  # noqa: BLE001 — retry/fail bookkeeping
+            # FINISH FENCE: if the reconciler reaped this step's lease
+            # while we ran (worker presumed dead), a fresh attempt owns it
+            # now — don't clobber its row or double-count attempts.
+            session.refresh(step)
+            if step.status != "running":
+                logger.warning("remake_step_superseded", step_id=step_id, kind=step.kind, status=step.status)
+                return {"ok": False, "error": "superseded", "status": step.status}
             step.attempts += 1
             step.lease_expires_at = None
-            if step.attempts < step.max_attempts:
-                step.status = "pending"  # the sweep / this advance re-drives it
-            else:
-                step.status = "failed"
+            step.status = "pending" if step.attempts < step.max_attempts else "failed"
             step.error = str(exc)[:2000]
             session.add(step)
             session.commit()
@@ -75,6 +87,10 @@ def run_step(step_id: str, handlers: dict[str, Handler]) -> dict:
             remake_reconciler.advance(session, step.remake_id)
             return {"ok": False, "error": str(exc), "attempts": step.attempts}
 
+        session.refresh(step)
+        if step.status != "running":
+            logger.warning("remake_step_superseded", step_id=step_id, kind=step.kind, status=step.status)
+            return {"ok": False, "error": "superseded", "status": step.status}
         step.status = "succeeded"
         step.error = None
         step.lease_expires_at = None

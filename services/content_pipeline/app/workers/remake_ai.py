@@ -40,15 +40,26 @@ def _presign(key: str) -> str:
     return s3lib.presigned_get_url(key, ttl=3600)
 
 
+# Cap on a fetched fal output so a runaway URL can't OOM the worker.
+_MAX_OUTPUT_BYTES = 500 * 1024 * 1024  # 500 MB
+
+
 def _download_output(url: str, work: str, name: str) -> str:
+    """Stream a fal output to disk (never buffer the whole file in RAM),
+    enforcing a hard size cap."""
     import httpx
 
     path = f"{work}/{name}"
-    with httpx.Client(timeout=120, follow_redirects=True) as client:
-        resp = client.get(url)
-        resp.raise_for_status()
-        with open(path, "wb") as fh:
-            fh.write(resp.content)
+    written = 0
+    with httpx.Client(timeout=300, follow_redirects=True) as client:
+        with client.stream("GET", url) as resp:
+            resp.raise_for_status()
+            with open(path, "wb") as fh:
+                for chunk in resp.iter_bytes(chunk_size=1024 * 256):
+                    written += len(chunk)
+                    if written > _MAX_OUTPUT_BYTES:
+                        raise RuntimeError(f"fal output exceeds {_MAX_OUTPUT_BYTES} bytes")
+                    fh.write(chunk)
     return path
 
 

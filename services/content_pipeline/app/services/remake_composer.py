@@ -37,14 +37,40 @@ _LOGO_POSITIONS = {
 }
 
 
-def _scene_texts(clips: List[RemakeShot]) -> List[renderer.SceneText]:
-    """One on-screen line per clip that has a text_plan replacement.
+def _clip_durations(clips: List[RemakeShot]) -> List[float]:
+    """Per-clip durations, in clip order.
 
-    Phase 1 keeps it simple: the first replacement of a shot's text_plan
-    becomes that scene's caption, windowed to the scene by scene_pos
-    (the renderer computes the actual start/end from durations)."""
+    Prefer the PROBED output duration (the cut is re-encoded to a fixed
+    fps and runs a frame or two long); fall back to the planned window
+    only when a clip wasn't probed. Using the real durations keeps the
+    caption windows below aligned with the concatenated timeline instead
+    of drifting later across many shots.
+    """
+    durs: List[float] = []
+    for shot in clips:
+        if shot.output_duration_sec is not None:
+            durs.append(max(float(shot.output_duration_sec), 0.1))
+            continue
+        start = float(shot.trim_start_sec) if shot.trim_start_sec is not None else float(shot.start_sec)
+        end = float(shot.trim_end_sec) if shot.trim_end_sec is not None else float(shot.end_sec)
+        durs.append(max(end - start, 0.1))
+    return durs
+
+
+def _scene_texts(clips: List[RemakeShot], durations: List[float]) -> List[renderer.SceneText]:
+    """One on-screen line per clip that has a text_plan replacement,
+    WINDOWED to that clip's slot on the concatenated timeline.
+
+    The concat/video pipeline windows drawtext purely by start_sec/end_sec
+    (scene_pos is ignored there), so we must set them from the cumulative
+    clip durations — otherwise every caption renders for the whole video
+    at once."""
     out: List[renderer.SceneText] = []
+    elapsed = 0.0
     for pos, shot in enumerate(clips):
+        dur = durations[pos] if pos < len(durations) else 0.0
+        start = elapsed
+        elapsed += dur
         plan = shot.text_plan or []
         if not plan:
             continue
@@ -53,19 +79,13 @@ def _scene_texts(clips: List[RemakeShot]) -> List[renderer.SceneText]:
         if not text:
             continue
         style = first.get("style") or "bold_white"
-        out.append(renderer.SceneText(text=text, style=style, scene_pos=pos))
+        out.append(
+            renderer.SceneText(
+                text=text, style=style, scene_pos=pos,
+                start_sec=round(start, 3), end_sec=round(elapsed, 3),
+            )
+        )
     return out
-
-
-def _clip_durations(clips: List[RemakeShot]) -> List[float]:
-    # Prefer the trimmed window; the cut clip matches it closely enough
-    # for text windowing (the exact value is re-derived by the renderer).
-    durs: List[float] = []
-    for shot in clips:
-        start = float(shot.trim_start_sec) if shot.trim_start_sec is not None else float(shot.start_sec)
-        end = float(shot.trim_end_sec) if shot.trim_end_sec is not None else float(shot.end_sec)
-        durs.append(max(end - start, 0.1))
-    return durs
 
 
 def _outro_key(session: Session, remake: Remake) -> Optional[str]:
@@ -156,33 +176,26 @@ def _overlay_logo(remake: Remake, base_key: str, logo_key: str) -> str:
 def compose(session: Session, remake: Remake, clips: List[RemakeShot]) -> str:
     """Stitch shot clips → final video. Returns the S3 key.
 
-    Versioned filename so a shot-reject recompose never overwrites the
+    `make_key` embeds a fresh uuid in every output key, so each (re)compose
+    is a distinct S3 object — a shot-reject recompose never overwrites the
     video the reviewer is currently watching.
     """
+    durations = _clip_durations(clips)
     audio_mode = (remake.plan_json or {}).get("audio_mode", "keep")
     inputs = renderer.ComposeInputs(
         scene_video_keys=[c.output_s3_key for c in clips],
-        scene_durations_sec=_clip_durations(clips),
-        scene_texts=_scene_texts(clips),
+        scene_durations_sec=durations,
+        scene_texts=_scene_texts(clips, durations),
         source_audio_mode=audio_mode if audio_mode in ("keep", "duck", "drop") else "keep",
         outro_video_key=_outro_key(session, remake),
     )
-
-    # A version counter keeps recompose outputs distinct.
-    existing = remake.final_s3_key
-    version = 1
-    if existing and "_v" in existing:
-        try:
-            version = int(existing.rsplit("_v", 1)[1].split(".")[0]) + 1
-        except (ValueError, IndexError):
-            version = 2
 
     result = renderer.compose_variant(
         project_id=remake.project_id,
         scenario_id=remake.id,
         preset_key=remake.preset_key,
         inputs=inputs,
-        output_filename=f"remake-{remake.id}_v{version}.mp4",
+        output_filename=f"remake-{remake.id}.mp4",
     )
     composed_key = result["s3_key"]
 

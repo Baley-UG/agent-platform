@@ -28,8 +28,11 @@ _ANALYSIS_FLAT_USD = 0.05
 
 
 def estimate_shot(shot: RemakeShot) -> float:
-    dur = float(shot.end_sec) - float(shot.start_sec)
-    dur = max(dur, 0.0)
+    # Bill the trimmed window when the operator trimmed the shot — the
+    # per-second techniques only process that sub-range.
+    start = float(shot.trim_start_sec) if shot.trim_start_sec is not None else float(shot.start_sec)
+    end = float(shot.trim_end_sec) if shot.trim_end_sec is not None else float(shot.end_sec)
+    dur = max(end - start, 0.0)
     t = shot.technique
     if t in ("copy", "drop"):
         return 0.0

@@ -176,3 +176,29 @@ def test_segment_key_honours_the_shared_bucket_root_prefix(monkeypatch):
     monkeypatch.setattr(s3lib.settings, "S3_ROOT_PREFIX", "agent_platform", raising=False)
     key = cutter.s3_key_for_segment("proj-1", "scen-1", 1, "9:16")
     assert key.startswith("agent_platform/projects/proj-1/scenes/")
+
+
+# ---------------------------------------------------------------------------
+# silent-source audio guarantee (concat needs a uniform stream layout)
+# ---------------------------------------------------------------------------
+
+
+def test_source_with_audio_maps_source_track():
+    cmd = _cmd((0.0, 2.0))  # default src_has_audio=True
+    assert "0:a:0" in cmd
+    assert "anullsrc" not in " ".join(cmd)
+
+
+def test_silent_source_synthesizes_a_track():
+    """A source with no audio must still yield an aac stereo clip, or the
+    concat demuxer breaks on a mixed-audio deck."""
+    segs = _segments((0.0, 2.0), (2.0, 4.0))
+    cmd = cutter.build_multicut_command(
+        src_path="/tmp/s.mp4", segments=segs, aspect="9:16",
+        out_paths=[f"/tmp/{s.idx}.mp4" for s in segs], src_has_audio=False,
+    )
+    joined = " ".join(cmd)
+    assert "anullsrc=channel_layout=stereo:sample_rate=48000" in joined
+    assert "1:a:0" in cmd          # every output maps the silent track
+    assert cmd.count("-shortest") == 2   # trimmed to each segment
+    assert "aac" in cmd            # still encodes an audio codec

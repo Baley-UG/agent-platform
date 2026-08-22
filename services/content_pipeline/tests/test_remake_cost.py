@@ -39,3 +39,10 @@ def test_copy_only_ad_is_basically_free():
     shots = [_shot("copy"), _shot("copy"), _shot("copy")]
     total = cost._ANALYSIS_FLAT_USD + sum(cost.estimate_shot(s) for s in shots)
     assert total == cost._ANALYSIS_FLAT_USD
+
+
+def test_restyle_bills_the_trimmed_window():
+    s = _shot("restyle", dur=10.0)
+    s.trim_start_sec = 2.0
+    s.trim_end_sec = 5.0  # 3s trimmed window, not the full 10s
+    assert abs(cost.estimate_shot(s) - cost._RESTYLE_PER_SEC_USD * 3.0) < 1e-6

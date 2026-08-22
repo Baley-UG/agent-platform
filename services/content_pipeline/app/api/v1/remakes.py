@@ -107,6 +107,20 @@ def approve_plan(
     return _detail(session, remake)
 
 
+@router.post("/{remake_id}/retry", response_model=RemakeDetail)
+def retry(
+    remake_id: uuid.UUID,
+    project: Project = Depends(get_project),
+    session: Session = Depends(get_session),
+) -> RemakeDetail:
+    """Recover a needs_attention remake by re-driving every failed step
+    (including global ones like scene_detect / author_plan / compose that
+    the per-shot retry can't reach)."""
+    remake = svc.get(session, project.id, remake_id)
+    svc.retry(session, remake)
+    return _detail(session, remake)
+
+
 @router.post("/{remake_id}/shots/{shot_id}/retry", response_model=RemakeDetail)
 def retry_shot(
     remake_id: uuid.UUID,

@@ -115,10 +115,17 @@ def build_multicut_command(
     fps: int = DEFAULT_FPS,
     fit_mode: str = "cover",
     crf: int = DEFAULT_CRF,
+    src_has_audio: bool = True,
 ) -> List[str]:
     """One ffmpeg argv that writes every segment in `segments`.
 
     `out_paths` must be index-aligned with `segments`.
+
+    EVERY produced clip carries an aac stereo 48k audio track — even when
+    the source has none. The concat demuxer that compose uses requires a
+    uniform stream layout across all clips, so a single silent source
+    shot would otherwise break (or silently truncate) the whole compose.
+    When the source has no audio we synthesize silence from `anullsrc`.
     """
     if len(out_paths) != len(segments):
         raise SegmentCutError(
@@ -131,11 +138,18 @@ def build_multicut_command(
     af = normalize_audio_filter()
 
     cmd = ["ffmpeg", "-hide_banner", "-y", "-loglevel", "warning", "-i", src_path]
+    if not src_has_audio:
+        # Input 1: infinite silence, trimmed per-output by -t / -shortest.
+        cmd += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
+
     for seg, out_path in zip(segments, out_paths):
         cmd += _seek_args(seg.start_sec, seg.duration_sec)
+        if src_has_audio:
+            cmd += ["-map", "0:v:0", "-map", "0:a:0", "-af", af]
+        else:
+            cmd += ["-map", "0:v:0", "-map", "1:a:0", "-shortest"]
         cmd += [
             "-vf", vf,
-            "-af", af,
             "-c:v", "libx264",
             "-preset", DEFAULT_PRESET,
             "-crf", str(crf),
@@ -149,6 +163,21 @@ def build_multicut_command(
             out_path,
         ]
     return cmd
+
+
+def _probe_has_audio(video_path: str) -> bool:
+    """True when the file carries at least one audio stream."""
+    if not shutil.which("ffprobe"):
+        return True  # assume audio; the source-audio path is the common case
+    try:
+        out = subprocess.check_output(
+            ["ffprobe", "-v", "error", "-select_streams", "a",
+             "-show_entries", "stream=index", "-of", "csv=p=0", video_path],
+            stderr=subprocess.PIPE, timeout=30,
+        )
+        return bool(out.strip())
+    except (subprocess.CalledProcessError, OSError):
+        return True
 
 
 def s3_key_for_segment(
@@ -202,6 +231,7 @@ def cut_segments(
     workdir = tempfile.mkdtemp(prefix="segcut-")
     try:
         src_path = _download_source(src_s3_key, workdir)
+        src_has_audio = _probe_has_audio(src_path)
 
         out_paths = [
             os.path.join(workdir, f"seg-{seg.idx:02d}.mp4") for seg in segments
@@ -213,6 +243,7 @@ def cut_segments(
             out_paths=out_paths,
             fps=fps,
             fit_mode=fit_mode,
+            src_has_audio=src_has_audio,
         )
         logger.info(
             "segment_cut_start",
