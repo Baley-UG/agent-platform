@@ -75,6 +75,14 @@ class Material(SQLModel, table=True):
     txt_url: Optional[str] = Field(default=None)
     asr: Optional[str] = Field(default=None)
 
+    # AI annotations (MCP `annotate_ad`) — not from the upstream API.
+    # `script` = the video's scenario (shot-by-shot what happens),
+    # `summary` = a short abstract. Authored by an agent that watched
+    # the creative; make the library searchable by what ads DO.
+    script: Optional[str] = Field(default=None)
+    summary: Optional[str] = Field(default=None)
+    annotated_at: Optional[datetime] = Field(default=None)
+
     # Denormalised primary resource.
     media_format: Optional[str] = Field(default=None, max_length=32)
     media_width: Optional[int] = Field(default=None)

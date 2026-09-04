@@ -92,12 +92,46 @@ app.add_api_route("/ready", ready, methods=["GET"], tags=["health"])
 # Mount the MCP server at /mcp (Streamable HTTP transport), mirroring
 # ig_scraper. When the `mcp` package isn't installed `mcp_server` is
 # None and mounting is skipped — the REST API is unaffected.
+
+
+class _McpAuth:
+    """Bearer/X-API-Key gate on the MCP mount.
+
+    The REST surface has its own dependency-based key check; a Starlette
+    mount bypasses FastAPI dependencies, so without this the MCP tools
+    would be open to anyone who can reach the port — unacceptable the
+    moment the service is exposed through a reverse proxy for remote
+    Claude access. Same key as REST (`AD_SCRAPER_API_KEY`), sent as
+    `Authorization: Bearer <key>` (MCP clients) or `X-API-Key`.
+    """
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+            expected = settings.AD_SCRAPER_API_KEY
+            ok = (
+                headers.get("authorization") == f"Bearer {expected}"
+                or headers.get("x-api-key") == expected
+            )
+            if not ok:
+                from starlette.responses import JSONResponse
+
+                await JSONResponse({"detail": "invalid or missing API key"}, status_code=401)(
+                    scope, receive, send
+                )
+                return
+        await self.inner(scope, receive, send)
+
+
 try:
     from app.mcp_server import mcp_server  # noqa: E402
 
     if mcp_server is not None:
         try:
-            app.mount("/mcp", mcp_server.streamable_http_app())
+            app.mount("/mcp", _McpAuth(mcp_server.streamable_http_app()))
             logger.info("mcp_server_mounted", path="/mcp")
         except Exception as exc:  # noqa: BLE001
             logger.warning("mcp_mount_failed", error=str(exc))

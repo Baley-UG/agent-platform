@@ -2,7 +2,10 @@
   "mcpServers": {
     "ad-intelligence": {
       "type": "http",
-      "url": "http://127.0.0.1:8083/mcp/mcp"
+      "url": "http://127.0.0.1:8083/mcp/mcp",
+      "headers": {
+        "Authorization": "Bearer ${AD_SCRAPER_API_KEY:-changeme-not-a-real-key}"
+      }
     }
   }
 }

@@ -38,6 +38,7 @@ _MATERIAL_COLUMNS = """
     m.media_format, m.media_width, m.media_height, m.media_duration_sec,
     m.media_url, m.poster_url, m.media_url_expires_at,
     m.media_s3_key, m.poster_s3_key, m.media_mirrored_at,
+    m.summary, m.annotated_at,
     m.first_seen_at, m.last_seen_at
 """
 
@@ -226,7 +227,7 @@ def get_material(session: Session, material_id: str) -> Optional[Dict[str, Any]]
     """Fetch one material with its resources, facets and advertisers."""
     row = (
         session.execute(
-            sql_text(f"SELECT {_MATERIAL_COLUMNS}, m.asr, m.violation FROM ad_materials m WHERE m.id = :id"),
+            sql_text(f"SELECT {_MATERIAL_COLUMNS}, m.asr, m.violation, m.script FROM ad_materials m WHERE m.id = :id"),
             {"id": material_id},
         )
         .mappings()
@@ -301,7 +302,11 @@ def list_advertisers(
         where.append("a.kind = :kind")
         params["kind"] = kind
     if search:
-        where.append("(a.name ILIKE :search OR a.alias ILIKE :search)")
+        # `alias` is text[] (localized store names) — ILIKE on the array
+        # raises UndefinedFunction; flatten it for the match.
+        where.append(
+            "(a.name ILIKE :search OR array_to_string(a.alias, ' ') ILIKE :search)"
+        )
         params["search"] = f"%{search}%"
 
     rows = (

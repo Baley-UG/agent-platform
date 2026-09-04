@@ -232,6 +232,28 @@ def _build_server():
             }
 
     @mcp.tool()
+    def annotate_ad(
+        material_id: str,
+        script: Optional[str] = None,
+        summary: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Store your analysis of one creative: `script` = the video's
+        scenario (shot-by-shot: what happens, who's on screen, on-screen
+        text, hook/CTA), `summary` = a 1-3 sentence abstract. Watch the
+        video via get_ad_media_url first. Only the fields you pass
+        change; an empty string clears a field. These annotations are
+        returned by get_ad (script+summary) and search_ads (summary), so
+        the library becomes searchable by what ads actually do."""
+        from app.services import annotations
+        from app.services.database import session_scope
+
+        with session_scope() as session:
+            result = annotations.annotate(
+                session, material_id, script=script, summary=summary
+            )
+        return result if result is not None else {"error": "material not found"}
+
+    @mcp.tool()
     def import_ad_to_project(
         material_id: str, project_id: str, auto_approve: bool = False
     ) -> Dict[str, Any]:
