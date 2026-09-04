@@ -100,6 +100,12 @@ class Settings(BaseSettings):
 
     # ----- Auth -----
     AD_SCRAPER_API_KEY: str = Field(default="changeme-not-a-real-key")
+
+    # ----- content_pipeline bridge (MCP `import_ad_to_project` tool) -----
+    # Internal URL of the content_pipeline API; both services share the
+    # compose network. CP_API_KEY comes from the shared root .env.
+    CP_API_URL: str = Field(default="http://content-pipeline-api:8082")
+    CP_API_KEY: str = Field(default="")
     AD_SECRET_KEY: str = Field(
         default="changeme-fernet-key",
         description="Fernet key for encrypting the YouCloud password and session cookie. "

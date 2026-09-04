@@ -24,6 +24,8 @@ dependencies = [
     # S3 mirror of scraped creatives; shares the bucket with content_pipeline
     # and ig_scraper under the `ad-scraper/` prefix.
     "boto3>=1.34.0",
+    # MCP surface at /mcp (streamable HTTP), mirroring ig_scraper.
+    "mcp>=1.6.0",
 ]
 
 [project.optional-dependencies]

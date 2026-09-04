@@ -31,7 +31,17 @@ async def lifespan(app: FastAPI):
         mirror_policy=settings.AD_MIRROR_MEDIA,
         max_rows_per_filter_set=settings.max_rows_per_filter_set,
     )
-    yield
+    # The mounted MCP sub-app's own lifespan never runs (Starlette mounts
+    # don't propagate it), so its streamable-HTTP session manager must be
+    # started here or every /mcp request 500s with "Task group is not
+    # initialized".
+    from app.mcp_server import mcp_server  # noqa: E402 — lazy, optional
+
+    if mcp_server is not None:
+        async with mcp_server.session_manager.run():
+            yield
+    else:
+        yield
     logger.info("ad_scraper_api_shutdown")
 
 
@@ -78,6 +88,21 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 # want to remember the API prefix.
 app.add_api_route("/health", health, methods=["GET"], tags=["health"])
 app.add_api_route("/ready", ready, methods=["GET"], tags=["health"])
+
+# Mount the MCP server at /mcp (Streamable HTTP transport), mirroring
+# ig_scraper. When the `mcp` package isn't installed `mcp_server` is
+# None and mounting is skipped — the REST API is unaffected.
+try:
+    from app.mcp_server import mcp_server  # noqa: E402
+
+    if mcp_server is not None:
+        try:
+            app.mount("/mcp", mcp_server.streamable_http_app())
+            logger.info("mcp_server_mounted", path="/mcp")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("mcp_mount_failed", error=str(exc))
+except Exception as exc:  # noqa: BLE001
+    logger.warning("mcp_import_failed", error=str(exc))
 
 
 @app.get("/")
