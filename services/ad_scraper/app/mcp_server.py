@@ -291,6 +291,29 @@ def _build_server():
         return payload if err is None else {"error": err}
 
     @mcp.tool()
+    def list_projects() -> List[Dict[str, Any]]:
+        """The platform's projects (brands/tenants). Call this FIRST when
+        the user names a project ("X projesine aktar") — every
+        project-scoped tool (import_ad_to_project, list_references,
+        upload_produced_video) takes the `id` from here. Reads the shared
+        Postgres directly; archived projects are hidden."""
+        from sqlalchemy import text as sql_text
+
+        from app.services.database import session_scope
+
+        with session_scope() as session:
+            rows = session.execute(
+                sql_text(
+                    "SELECT id, slug, name, status FROM public.projects "
+                    "WHERE status != 'archived' ORDER BY name"
+                )
+            ).mappings().all()
+        return [
+            {"id": str(r["id"]), "slug": r["slug"], "name": r["name"], "status": r["status"]}
+            for r in rows
+        ]
+
+    @mcp.tool()
     def list_references(
         project_id: str,
         status: Optional[str] = None,
