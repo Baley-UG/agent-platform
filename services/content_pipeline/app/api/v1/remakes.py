@@ -19,6 +19,7 @@ from app.schemas.remakes import (
     PlanPatch,
     RemakeCreate,
     RemakeDetail,
+    RemakeImportExternal,
     RemakeRead,
     ShotRead,
     ShotRejectRequest,
@@ -59,6 +60,25 @@ def create(
     session: Session = Depends(get_session),
 ) -> RemakeRead:
     remake = svc.create(session, project, payload, created_by="api")
+    return RemakeRead.model_validate(remake, from_attributes=True)
+
+
+@router.post("/import-external", response_model=RemakeRead, status_code=status.HTTP_201_CREATED)
+def import_external(
+    payload: RemakeImportExternal,
+    project: Project = Depends(get_project),
+    session: Session = Depends(get_session),
+) -> RemakeRead:
+    """Register an externally-produced video (fetched from `video_url`)
+    as a remake in `final_review` — the normal Gate-2 approve → done →
+    stock/publish flow applies from there."""
+    remake = svc.import_external(
+        session, project,
+        reference_id=payload.reference_id,
+        video_url=payload.video_url,
+        caption=payload.caption,
+        created_by="api",
+    )
     return RemakeRead.model_validate(remake, from_attributes=True)
 
 

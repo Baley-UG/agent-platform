@@ -19,6 +19,19 @@ class RemakeCreate(BaseModel):
     preset_key: Optional[str] = None
 
 
+class RemakeImportExternal(BaseModel):
+    """Register an externally-produced video against a reference.
+
+    Lands at Gate 2 (`final_review`) so the human approve → done →
+    stock/publish flow applies unchanged. `video_url` must be fetchable
+    by this service (public URL or a presigned S3 GET).
+    """
+
+    reference_id: uuid.UUID
+    video_url: str = Field(min_length=8, max_length=2048)
+    caption: Optional[str] = None
+
+
 class ShotRead(BaseModel):
     id: uuid.UUID
     idx: int

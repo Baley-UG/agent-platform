@@ -253,35 +253,95 @@ def _build_server():
             )
         return result if result is not None else {"error": "material not found"}
 
+    def _cp_request(method: str, path: str, *, json_body: Optional[dict] = None,
+                    params: Optional[dict] = None, timeout: int = 60):
+        """One call into content_pipeline with the service key. Returns
+        (payload, error) — exactly one is non-None."""
+        import httpx
+
+        if not settings.CP_API_KEY:
+            return None, "CP_API_KEY is not configured on ad_scraper"
+        url = f"{settings.CP_API_URL.rstrip('/')}/api/v1{path}"
+        try:
+            resp = httpx.request(
+                method, url, json=json_body, params=params,
+                headers={"X-API-Key": settings.CP_API_KEY}, timeout=timeout,
+            )
+        except httpx.HTTPError as exc:
+            return None, f"content_pipeline unreachable: {exc}"
+        if resp.status_code >= 400:
+            return None, f"content_pipeline {resp.status_code}: {resp.text[:300]}"
+        return resp.json(), None
+
     @mcp.tool()
     def import_ad_to_project(
         material_id: str, project_id: str, auto_approve: bool = False
     ) -> Dict[str, Any]:
-        """Hand one mirrored ad to a content_pipeline project as a
-        reference — the input a remake starts from. Copies the mirrored
-        media into the project's prefix and carries slogan/ASR/metrics.
-        Returns the created reference (use its id with the remake API/UI).
-        """
-        import httpx
-
-        url = (
-            f"{settings.CP_API_URL.rstrip('/')}/api/v1/projects/{project_id}"
-            "/references/import-from-ads"
+        """MARK AN AD AS A REFERENCE: hand one mirrored ad to a
+        content_pipeline project as a reference video — the input a
+        remake (or an external production) starts from. Copies the
+        mirrored media into the project's prefix and carries
+        slogan/ASR/metrics. Returns the created reference; its `id` is
+        what list_references shows and what upload_produced_video and
+        the remake UI take."""
+        payload, err = _cp_request(
+            "POST", f"/projects/{project_id}/references/import-from-ads",
+            json_body={"material_id": material_id, "auto_approve": auto_approve, "copy_media": True},
         )
-        if not settings.CP_API_KEY:
-            return {"error": "CP_API_KEY is not configured on ad_scraper"}
-        try:
-            resp = httpx.post(
-                url,
-                json={"material_id": material_id, "auto_approve": auto_approve, "copy_media": True},
-                headers={"X-API-Key": settings.CP_API_KEY},
-                timeout=60,
-            )
-        except httpx.HTTPError as exc:
-            return {"error": f"content_pipeline unreachable: {exc}"}
-        if resp.status_code >= 400:
-            return {"error": f"content_pipeline {resp.status_code}: {resp.text[:300]}"}
-        return resp.json()
+        return payload if err is None else {"error": err}
+
+    @mcp.tool()
+    def list_references(
+        project_id: str,
+        status: Optional[str] = None,
+        limit: int = 25,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """List a project's reference videos (ads/reels already marked as
+        references). `status` ∈ candidate | approved | archived. Rows
+        carry a presigned `media_url` you can watch/download — the input
+        for producing a video outside the pipeline. Compact rows: id,
+        provider, source id, caption, media availability, import time."""
+        params: Dict[str, Any] = {"limit": max(1, min(limit, 100)), "offset": max(0, offset)}
+        if status:
+            params["status"] = status
+        payload, err = _cp_request("GET", f"/projects/{project_id}/references", params=params)
+        if err is not None:
+            return [{"error": err}]
+        rows = payload if isinstance(payload, list) else (payload or {}).get("items", [])
+        out = []
+        for r in rows:
+            out.append({
+                "reference_id": r.get("id"),
+                "source_provider": r.get("source_provider"),
+                "source_external_id": r.get("source_external_id"),
+                "caption": (r.get("caption") or "")[:160],
+                "status": r.get("status"),
+                "has_media": bool(r.get("media_s3_key")),
+                "media_url": r.get("media_url"),
+                "imported_at": r.get("imported_at"),
+            })
+        return out
+
+    @mcp.tool()
+    def upload_produced_video(
+        project_id: str,
+        reference_id: str,
+        video_url: str,
+        caption: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Upload a FINISHED video produced outside the pipeline for one
+        reference. `video_url` must be fetchable by the platform (a
+        public URL or presigned GET); the file is copied into the
+        project's storage and lands as a remake in `final_review` — a
+        human approves it in the panel, after which it enters the
+        stock/publish flow. Returns the created remake (id + status)."""
+        payload, err = _cp_request(
+            "POST", f"/projects/{project_id}/remakes/import-external",
+            json_body={"reference_id": reference_id, "video_url": video_url, "caption": caption},
+            timeout=330,  # the platform streams the file inside this call
+        )
+        return payload if err is None else {"error": err}
 
     return mcp
 

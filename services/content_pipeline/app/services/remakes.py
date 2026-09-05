@@ -346,6 +346,85 @@ def reject_shot(
     return remake
 
 
+# Cap on an externally-produced video fetched by URL. Matches the AI
+# output cap in the workers.
+_EXTERNAL_MAX_BYTES = 300 * 1024 * 1024
+
+
+def import_external(
+    session: Session,
+    project: Project,
+    *,
+    reference_id: uuid.UUID,
+    video_url: str,
+    caption: Optional[str] = None,
+    created_by: Optional[str] = None,
+) -> Remake:
+    """Register an EXTERNALLY produced video as a remake at Gate 2.
+
+    The outside-the-pipeline flow: an agent marks an ad as a reference
+    (MCP `import_ad_to_project`), a human or another tool produces the
+    video elsewhere, and the result comes back here by URL. It lands as
+    a remake in `final_review` — so the existing human gate, approve →
+    `done`, stock and publish plumbing all apply unchanged. The
+    reconciler never touches it (`final_review` is frozen) and there are
+    no shots/steps to drive.
+    """
+    import httpx
+
+    from app.core import s3 as s3lib
+
+    reference = session.get(ContentReference, reference_id)
+    if reference is None or reference.project_id != project.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="reference not found")
+
+    # Fetch the produced video (streamed, capped).
+    buf = bytearray()
+    try:
+        with httpx.Client(timeout=300, follow_redirects=True) as client:
+            with client.stream("GET", video_url) as resp:
+                resp.raise_for_status()
+                for chunk in resp.iter_bytes(chunk_size=1024 * 256):
+                    buf.extend(chunk)
+                    if len(buf) > _EXTERNAL_MAX_BYTES:
+                        raise HTTPException(
+                            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                            detail=f"video exceeds {_EXTERNAL_MAX_BYTES} bytes",
+                        )
+    except HTTPException:
+        raise
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"could not fetch video_url: {exc}",
+        ) from exc
+    if not buf:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="video_url returned no bytes")
+
+    final_key = s3lib.make_key(project.id, "finals", f"external-{reference.id}.mp4")
+    s3lib.upload_bytes(final_key, bytes(buf), content_type="video/mp4")
+
+    remake = Remake(
+        project_id=project.id,
+        reference_id=reference.id,
+        preset_key=presets_svc.recommend_preset_for_reference(reference),
+        status="final_review",
+        # No pipeline ran; keep provenance to the reference's mirror when
+        # it exists (the column is NOT NULL by design for pipeline runs).
+        source_s3_key=reference.media_s3_key or final_key,
+        plan_json={"external": True, "video_url_origin": video_url[:500]},
+        final_s3_key=final_key,
+        default_caption=(caption or reference.caption or "").strip() or None,
+        default_hashtags=list(reference.hashtags or []) or None,
+        created_by=created_by or "mcp",
+    )
+    session.add(remake)
+    session.flush()
+    session.refresh(remake)
+    logger.info("remake_external_imported", remake_id=str(remake.id), reference_id=str(reference.id))
+    return remake
+
+
 def approve_final(
     session: Session,
     remake: Remake,
