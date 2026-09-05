@@ -275,20 +275,41 @@ def _build_server():
 
     @mcp.tool()
     def import_ad_to_project(
-        material_id: str, project_id: str, auto_approve: bool = False
+        material_id: str,
+        project_id: str,
+        auto_approve: bool = False,
+        title: Optional[str] = None,
     ) -> Dict[str, Any]:
         """MARK AN AD AS A REFERENCE: hand one mirrored ad to a
         content_pipeline project as a reference video — the input a
         remake (or an external production) starts from. Copies the
         mirrored media into the project's prefix and carries
-        slogan/ASR/metrics. Returns the created reference; its `id` is
+        slogan/ASR/metrics. `title` names the reference for humans
+        ("Rakip X — before/after hook"); rename later with
+        rename_reference. Returns the created reference; its `id` is
         what list_references shows and what upload_produced_video and
         the remake UI take."""
         payload, err = _cp_request(
             "POST", f"/projects/{project_id}/references/import-from-ads",
-            json_body={"material_id": material_id, "auto_approve": auto_approve, "copy_media": True},
+            json_body={
+                "material_id": material_id, "auto_approve": auto_approve,
+                "copy_media": True, "title": title,
+            },
         )
         return payload if err is None else {"error": err}
+
+    @mcp.tool()
+    def rename_reference(project_id: str, reference_id: str, title: str) -> Dict[str, Any]:
+        """Give a reference video a human name (max 255 chars). Shown in
+        list_references and the panel; the source's own ad copy stays in
+        `caption`."""
+        payload, err = _cp_request(
+            "PATCH", f"/projects/{project_id}/references/{reference_id}",
+            json_body={"title": title.strip()[:255]},
+        )
+        if err is not None:
+            return {"error": err}
+        return {"reference_id": payload.get("id"), "title": payload.get("title")}
 
     @mcp.tool()
     def list_projects() -> List[Dict[str, Any]]:
@@ -323,8 +344,10 @@ def _build_server():
         """List a project's reference videos (ads/reels already marked as
         references). `status` ∈ candidate | approved | archived. Rows
         carry a presigned `media_url` you can watch/download — the input
-        for producing a video outside the pipeline. Compact rows: id,
-        provider, source id, caption, media availability, import time."""
+        for producing a video outside the pipeline — plus the reference's
+        `title` (human name) and, when it came from Ad Intelligence, an
+        `ad_stats` block (impressions, days on air, ad_count,
+        advertisers) so you can pick the proven performers."""
         params: Dict[str, Any] = {"limit": max(1, min(limit, 100)), "offset": max(0, offset)}
         if status:
             params["status"] = status
@@ -334,14 +357,29 @@ def _build_server():
         rows = payload if isinstance(payload, list) else (payload or {}).get("items", [])
         out = []
         for r in rows:
+            meta = r.get("metadata") or {}
+            # Ad-Intelligence provenance → compact performance block.
+            ad_stats = None
+            if r.get("source_provider") == "appgrowing" or "impressions" in meta:
+                ad_stats = {
+                    "impressions": meta.get("impressions"),
+                    "impressions_label": meta.get("impressions_label"),
+                    "run_days": meta.get("run_days"),
+                    "ad_count": meta.get("ad_count"),
+                    "advertisers": meta.get("advertisers"),
+                    "first_on_air": meta.get("first_on_air"),
+                    "last_on_air": meta.get("last_on_air"),
+                }
             out.append({
                 "reference_id": r.get("id"),
+                "title": r.get("title"),
                 "source_provider": r.get("source_provider"),
                 "source_external_id": r.get("source_external_id"),
                 "caption": (r.get("caption") or "")[:160],
                 "status": r.get("status"),
                 "has_media": bool(r.get("media_s3_key")),
                 "media_url": r.get("media_url"),
+                "ad_stats": ad_stats,
                 "imported_at": r.get("imported_at"),
             })
         return out

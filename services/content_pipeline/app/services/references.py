@@ -413,6 +413,7 @@ def import_from_ads(
         media_s3_key=media_s3_key,
         poster_s3_key=poster_s3_key,
         # The ad's own copy line is the closest thing to a caption.
+        title=(getattr(payload, "title", None) or "").strip() or None,
         caption=raw.get("slogan") or raw.get("description"),
         # ASR is the platform's auto-transcript. Populated on roughly a fifth
         # of video creatives, and the single most useful input the analyzer

@@ -49,6 +49,9 @@ class ContentReference(SQLModel, table=True):
     media_s3_key: Optional[str] = Field(default=None, sa_column=sa.Column(sa.String(512), nullable=True))
     poster_s3_key: Optional[str] = Field(default=None, sa_column=sa.Column(sa.String(512), nullable=True))
 
+    # Operator/agent-given name for the reference video ("Rakip X —
+    # before/after hook"). Falls back to `caption` in every display.
+    title: Optional[str] = Field(default=None, sa_column=sa.Column(sa.String(255), nullable=True))
     caption: Optional[str] = Field(default=None, sa_column=sa.Column(sa.Text, nullable=True))
     transcript: Optional[str] = Field(default=None, sa_column=sa.Column(sa.Text, nullable=True))
     hashtags: Optional[List[str]] = Field(default=None, sa_column=sa.Column(ARRAY(sa.Text), nullable=True))

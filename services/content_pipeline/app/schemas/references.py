@@ -84,6 +84,7 @@ class ReferenceImportFromAds(BaseModel):
 
 class ReferenceUpdate(BaseModel):
     status: Optional[ReferenceStatus] = None
+    title: Optional[str] = None
     caption: Optional[str] = None
     transcript: Optional[str] = None
     hashtags: Optional[List[str]] = None
@@ -106,6 +107,7 @@ class ReferenceRead(BaseModel):
     # is missing.
     media_url: Optional[str] = None
     poster_url: Optional[str] = None
+    title: Optional[str] = None
     caption: Optional[str]
     transcript: Optional[str]
     hashtags: Optional[List[str]]
