@@ -385,22 +385,55 @@ def _build_server():
         return out
 
     @mcp.tool()
+    def request_video_upload(project_id: str, filename: str = "produced.mp4") -> Dict[str, Any]:
+        """Get a presigned PUT URL for uploading a LOCAL video file into
+        the platform's storage. Flow for a file on your machine:
+          1. Call this → {upload_url, s3_key}
+          2. PUT the file:  curl -X PUT --upload-file video.mp4
+             -H 'Content-Type: video/mp4' '<upload_url>'
+          3. Call upload_produced_video(..., s3_key=<s3_key>) to register
+             it against a reference.
+        For a file already hosted at a URL, skip this and pass video_url
+        to upload_produced_video directly."""
+        payload, err = _cp_request(
+            "POST", f"/projects/{project_id}/assets/upload-url",
+            json_body={"kind": "misc", "filename": filename, "content_type": "video/mp4"},
+        )
+        if err is not None:
+            return {"error": err}
+        return {
+            "upload_url": payload.get("upload_url"),
+            "s3_key": payload.get("s3_key"),
+            "headers": payload.get("headers") or {"Content-Type": "video/mp4"},
+            "note": "PUT the file to upload_url, then call upload_produced_video with this s3_key.",
+        }
+
+    @mcp.tool()
     def upload_produced_video(
         project_id: str,
         reference_id: str,
-        video_url: str,
+        video_url: Optional[str] = None,
+        s3_key: Optional[str] = None,
         caption: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Upload a FINISHED video produced outside the pipeline for one
-        reference. `video_url` must be fetchable by the platform (a
-        public URL or presigned GET); the file is copied into the
-        project's storage and lands as a remake in `final_review` — a
-        human approves it in the panel, after which it enters the
-        stock/publish flow. Returns the created remake (id + status)."""
+        """Register a FINISHED video produced outside the pipeline for
+        one reference. Pass EXACTLY ONE of:
+          - `video_url` — a URL the platform can fetch (public or
+            presigned GET); the file is streamed in.
+          - `s3_key` — from request_video_upload after you PUT the local
+            file; registered with a server-side copy (no re-transfer).
+        Lands as a remake in `final_review` — a human approves it in the
+        panel, after which it enters the stock/publish flow. Returns the
+        created remake (id + status)."""
+        if bool(video_url) == bool(s3_key):
+            return {"error": "pass exactly one of video_url or s3_key"}
         payload, err = _cp_request(
             "POST", f"/projects/{project_id}/remakes/import-external",
-            json_body={"reference_id": reference_id, "video_url": video_url, "caption": caption},
-            timeout=330,  # the platform streams the file inside this call
+            json_body={
+                "reference_id": reference_id, "video_url": video_url,
+                "s3_key": s3_key, "caption": caption,
+            },
+            timeout=330,  # the platform may stream the file inside this call
         )
         return payload if err is None else {"error": err}
 

@@ -76,6 +76,7 @@ def import_external(
         session, project,
         reference_id=payload.reference_id,
         video_url=payload.video_url,
+        s3_key=payload.s3_key,
         caption=payload.caption,
         created_by="api",
     )

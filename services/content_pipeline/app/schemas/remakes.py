@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class RemakeCreate(BaseModel):
@@ -23,13 +23,24 @@ class RemakeImportExternal(BaseModel):
     """Register an externally-produced video against a reference.
 
     Lands at Gate 2 (`final_review`) so the human approve → done →
-    stock/publish flow applies unchanged. `video_url` must be fetchable
-    by this service (public URL or a presigned S3 GET).
+    stock/publish flow applies unchanged. Exactly ONE of:
+      - `video_url` — fetchable by this service (public URL or presigned
+        S3 GET); the file is streamed in.
+      - `s3_key` — an object already in our bucket, e.g. uploaded via
+        the presigned-PUT flow (`POST /assets/upload-url`); server-side
+        copied into the finals prefix, no bytes move through the API.
     """
 
     reference_id: uuid.UUID
-    video_url: str = Field(min_length=8, max_length=2048)
+    video_url: Optional[str] = Field(default=None, min_length=8, max_length=2048)
+    s3_key: Optional[str] = Field(default=None, min_length=3, max_length=512)
     caption: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _exactly_one_source(self):
+        if bool(self.video_url) == bool(self.s3_key):
+            raise ValueError("pass exactly one of video_url or s3_key")
+        return self
 
 
 class ShotRead(BaseModel):
