@@ -34,6 +34,39 @@ router = APIRouter(
 )
 
 
+def _enrich(session: Session, payloads, remakes) -> None:
+    """Stamp poster_url + reference_title from the source references —
+    one bulk query per page, presigns only when a poster exists."""
+    from app.core import s3 as s3lib
+    from app.models.content_references import ContentReference
+    from sqlmodel import select as _select
+
+    ref_ids = {r.reference_id for r in remakes if r.reference_id}
+    if not ref_ids:
+        return
+    refs = {
+        r.id: r
+        for r in session.exec(
+            _select(ContentReference).where(ContentReference.id.in_(ref_ids))
+        ).all()
+    }
+    for payload, remake in zip(payloads, remakes):
+        ref = refs.get(remake.reference_id)
+        if ref is None:
+            continue
+        payload.reference_title = ref.title or (ref.caption or "")[:80] or None
+        key = ref.poster_s3_key or (
+            ref.media_s3_key
+            if (ref.media_s3_key or "").lower().endswith((".jpg", ".jpeg", ".png", ".webp"))
+            else None
+        )
+        if key:
+            try:
+                payload.poster_url = s3lib.presigned_get_url(key, ttl=3600)
+            except Exception:  # noqa: BLE001
+                payload.poster_url = None
+
+
 def _detail(session: Session, remake) -> RemakeDetail:
     shots = svc.shots_for(session, remake.id)
     steps = svc.steps_for(session, remake.id)
@@ -41,6 +74,7 @@ def _detail(session: Session, remake) -> RemakeDetail:
     payload.shots = [ShotRead.model_validate(s, from_attributes=True) for s in shots]
     payload.steps = [StepRead.model_validate(s, from_attributes=True) for s in steps]
     payload.progress = svc.progress(shots)
+    _enrich(session, [payload], [remake])
     # Presign the composed video so the review page can play it inline
     # against the private bucket.
     if remake.final_s3_key:
@@ -92,7 +126,9 @@ def list_(
     session: Session = Depends(get_session),
 ) -> List[RemakeRead]:
     rows = svc.list_(session, project.id, status_=status_, limit=limit, offset=offset)
-    return [RemakeRead.model_validate(r, from_attributes=True) for r in rows]
+    payloads = [RemakeRead.model_validate(r, from_attributes=True) for r in rows]
+    _enrich(session, payloads, rows)
+    return payloads
 
 
 @router.get("/{remake_id}", response_model=RemakeDetail)

@@ -97,6 +97,10 @@ class RemakeRead(BaseModel):
     created_by: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+    # Enriched by the API from the source reference: a presigned poster
+    # thumb for list cards and the reference's human name.
+    poster_url: Optional[str] = None
+    reference_title: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
