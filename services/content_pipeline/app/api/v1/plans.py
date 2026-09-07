@@ -172,7 +172,11 @@ def stock(
         rows = planner.stock_for_preset(session, project.id, preset, limit=200)
     else:
         rows = planner.stock_for_project(session, project.id)
-    return [RemakeRead.model_validate(r) for r in rows]
+    from app.api.v1.remakes import _enrich
+
+    payloads = [RemakeRead.model_validate(r) for r in rows]
+    _enrich(session, payloads, rows)
+    return payloads
 
 
 @stock_router.get("/calendar")
