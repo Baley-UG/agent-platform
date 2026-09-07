@@ -120,6 +120,10 @@ class RemakeDetail(RemakeRead):
     # Presigned URL of the SOURCE reference video — the review page shows
     # it side by side with the remake.
     source_url: Optional[str] = None
+    # Server-generated per-second frame strips for the timeline:
+    # {"source": [urls], "final": [urls]}. None until the ffmpeg worker
+    # has produced them (the panel falls back to client-side capture).
+    filmstrip: Optional[dict] = None
 
 
 class ShotPatch(BaseModel):

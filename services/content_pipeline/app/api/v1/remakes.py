@@ -94,6 +94,31 @@ def _detail(session: Session, remake) -> RemakeDetail:
             payload.source_url = s3lib.presigned_get_url(remake.source_s3_key, ttl=3600)
         except Exception:  # noqa: BLE001
             payload.source_url = None
+    # Server-generated timeline frames. Generated lazily by the ffmpeg
+    # worker on first view of a finished remake; until then the panel
+    # captures frames client-side.
+    fs = (remake.plan_json or {}).get("filmstrip")
+    if isinstance(fs, dict) and fs.get("final"):
+        try:
+            payload.filmstrip = {
+                kind: [s3lib.presigned_get_url(k, ttl=3600) for k in keys]
+                for kind, keys in fs.items()
+                if isinstance(keys, list) and keys
+            }
+        except Exception:  # noqa: BLE001
+            payload.filmstrip = None
+    elif remake.final_s3_key and remake.status in ("final_review", "done"):
+        from app.services.queue import enqueue
+
+        try:
+            enqueue(
+                "remake_ffmpeg",
+                "app.workers.remake_filmstrip.run",
+                str(remake.id),
+                job_id=f"rmfilmstrip_{remake.id}",
+            )
+        except Exception:  # noqa: BLE001 — best-effort; the panel has a fallback
+            pass
     return payload
 
 
