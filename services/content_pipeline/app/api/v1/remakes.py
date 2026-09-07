@@ -254,6 +254,19 @@ def approve_final(
     return RemakeRead.model_validate(remake, from_attributes=True)
 
 
+@router.post("/{remake_id}/reject-final", response_model=RemakeRead)
+def reject_final(
+    remake_id: uuid.UUID,
+    project: Project = Depends(get_project),
+    session: Session = Depends(get_session),
+) -> RemakeRead:
+    """Gate-2 rejection: final_review → rejected (terminal, distinct
+    from archived so it can be filtered/audited)."""
+    remake = svc.get(session, project.id, remake_id)
+    svc.reject_final(session, remake)
+    return RemakeRead.model_validate(remake, from_attributes=True)
+
+
 @router.post("/{remake_id}/unapprove-final", response_model=RemakeDetail)
 def unapprove_final(
     remake_id: uuid.UUID,

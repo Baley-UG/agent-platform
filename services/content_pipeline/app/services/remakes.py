@@ -504,6 +504,28 @@ def approve_final(
     return remake
 
 
+def reject_final(session: Session, remake: Remake, *, reason: Optional[str] = None) -> Remake:
+    """Gate-2 rejection: the composed/uploaded output is not wanted.
+
+    Distinct from `archived` (manual shelving) so rejected work can be
+    filtered and audited. Terminal for the remake; the reference stays
+    open for a fresh remake or re-upload.
+    """
+    if remake.status != "final_review":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"cannot reject from status={remake.status}",
+        )
+    remake.status = "rejected"
+    if reason:
+        remake.error = reason[:500]
+    session.add(remake)
+    session.flush()
+    session.refresh(remake)
+    logger.info("remake_final_rejected", remake_id=str(remake.id))
+    return remake
+
+
 def unapprove_final(session: Session, remake: Remake) -> Remake:
     """Revert a mistaken Gate-2 approval: done → final_review.
 
