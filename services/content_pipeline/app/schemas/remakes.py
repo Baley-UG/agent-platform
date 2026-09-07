@@ -114,6 +114,9 @@ class RemakeDetail(RemakeRead):
     progress: dict = {}
     # Presigned URL of the composed video (final_review / done pages).
     final_url: Optional[str] = None
+    # Presigned URL of the SOURCE reference video — the review page shows
+    # it side by side with the remake.
+    source_url: Optional[str] = None
 
 
 class ShotPatch(BaseModel):

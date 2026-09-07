@@ -128,6 +128,8 @@ class ReferenceRead(BaseModel):
     # "already remade" badge on the references grid so admins can spot
     # un-used candidates at a glance. Filled in by `svc.to_read`.
     remakes_count: int = 0
+    # How many of those remakes reached `done` — drives the Produced badge.
+    remakes_done_count: int = 0
 
     model_config = {"from_attributes": True, "populate_by_name": True}
 

@@ -77,13 +77,20 @@ def _detail(session: Session, remake) -> RemakeDetail:
     _enrich(session, [payload], [remake])
     # Presign the composed video so the review page can play it inline
     # against the private bucket.
-    if remake.final_s3_key:
-        from app.core import s3 as s3lib
+    from app.core import s3 as s3lib
 
+    if remake.final_s3_key:
         try:
             payload.final_url = s3lib.presigned_get_url(remake.final_s3_key, ttl=3600)
         except Exception:  # noqa: BLE001
             payload.final_url = None
+    # The source reference video, for the side-by-side compare on the
+    # review pages.
+    if remake.source_s3_key:
+        try:
+            payload.source_url = s3lib.presigned_get_url(remake.source_s3_key, ttl=3600)
+        except Exception:  # noqa: BLE001
+            payload.source_url = None
     return payload
 
 
