@@ -35,6 +35,9 @@ class RemakeImportExternal(BaseModel):
     video_url: Optional[str] = Field(default=None, min_length=8, max_length=2048)
     s3_key: Optional[str] = Field(default=None, min_length=3, max_length=512)
     caption: Optional[str] = None
+    # What the external production actually cost (USD) — lands in
+    # `actual_cost_usd` so manual uploads show up in cost reporting too.
+    cost_usd: Optional[float] = Field(default=None, ge=0, le=100_000)
 
     @model_validator(mode="after")
     def _exactly_one_source(self):

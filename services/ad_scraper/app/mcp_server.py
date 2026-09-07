@@ -415,9 +415,12 @@ def _build_server():
         video_url: Optional[str] = None,
         s3_key: Optional[str] = None,
         caption: Optional[str] = None,
+        cost_usd: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Register a FINISHED video produced outside the pipeline for
-        one reference. Pass EXACTLY ONE of:
+        one reference. `cost_usd` (optional) is what the production cost
+        in USD — it shows up in the platform's cost reporting.
+        Pass EXACTLY ONE of:
           - `video_url` — a URL the platform can fetch (public or
             presigned GET); the file is streamed in.
           - `s3_key` — from request_video_upload after you PUT the local
@@ -431,7 +434,7 @@ def _build_server():
             "POST", f"/projects/{project_id}/remakes/import-external",
             json_body={
                 "reference_id": reference_id, "video_url": video_url,
-                "s3_key": s3_key, "caption": caption,
+                "s3_key": s3_key, "caption": caption, "cost_usd": cost_usd,
             },
             timeout=330,  # the platform may stream the file inside this call
         )

@@ -85,8 +85,11 @@ def _detail(session: Session, remake) -> RemakeDetail:
         except Exception:  # noqa: BLE001
             payload.final_url = None
     # The source reference video, for the side-by-side compare on the
-    # review pages.
-    if remake.source_s3_key:
+    # review pages. Skip image mirrors (image-only references) — a JPEG
+    # in a <video> tag never loads and would wedge the synced player.
+    if remake.source_s3_key and not remake.source_s3_key.lower().endswith(
+        (".jpg", ".jpeg", ".png", ".webp", ".gif")
+    ):
         try:
             payload.source_url = s3lib.presigned_get_url(remake.source_s3_key, ttl=3600)
         except Exception:  # noqa: BLE001
@@ -119,6 +122,7 @@ def import_external(
         video_url=payload.video_url,
         s3_key=payload.s3_key,
         caption=payload.caption,
+        cost_usd=payload.cost_usd,
         created_by="api",
     )
     return RemakeRead.model_validate(remake, from_attributes=True)

@@ -359,6 +359,7 @@ def import_external(
     video_url: Optional[str] = None,
     s3_key: Optional[str] = None,
     caption: Optional[str] = None,
+    cost_usd: Optional[float] = None,
     created_by: Optional[str] = None,
 ) -> Remake:
     """Register an EXTERNALLY produced video as a remake at Gate 2.
@@ -441,6 +442,10 @@ def import_external(
         final_s3_key=final_key,
         default_caption=(caption or reference.caption or "").strip() or None,
         default_hashtags=list(reference.hashtags or []) or None,
+        # External productions can report what they cost — the only
+        # cost signal we have for out-of-pipeline work.
+        est_cost_usd=cost_usd,
+        actual_cost_usd=cost_usd or 0.0,
         created_by=created_by or "mcp",
     )
     session.add(remake)
