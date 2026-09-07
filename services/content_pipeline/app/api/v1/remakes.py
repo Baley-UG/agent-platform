@@ -254,6 +254,19 @@ def approve_final(
     return RemakeRead.model_validate(remake, from_attributes=True)
 
 
+@router.post("/{remake_id}/unapprove-final", response_model=RemakeDetail)
+def unapprove_final(
+    remake_id: uuid.UUID,
+    project: Project = Depends(get_project),
+    session: Session = Depends(get_session),
+) -> RemakeDetail:
+    """Revert a mistaken final approval: done → final_review. Refused
+    when the remake was already published from a plan slot."""
+    remake = svc.get(session, project.id, remake_id)
+    svc.unapprove_final(session, remake)
+    return _detail(session, remake)
+
+
 @router.post("/{remake_id}/archive", response_model=RemakeRead)
 def archive(
     remake_id: uuid.UUID,

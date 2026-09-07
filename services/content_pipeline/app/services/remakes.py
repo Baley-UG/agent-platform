@@ -504,6 +504,47 @@ def approve_final(
     return remake
 
 
+def unapprove_final(session: Session, remake: Remake) -> Remake:
+    """Revert a mistaken Gate-2 approval: done → final_review.
+
+    Safe by construction: refuses when any plan slot carrying this
+    remake was already published; not-yet-published slots are detached
+    back to `empty`. The media_asset from the approval stays in the
+    library (harmless — re-approving creates a fresh version) but the
+    remake drops out of stock/planner queries because status leaves
+    `done`.
+    """
+    if remake.status != "done":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"cannot un-approve from status={remake.status}",
+        )
+
+    from app.models.plan_slots import PlanSlot
+
+    slots = session.exec(select(PlanSlot).where(PlanSlot.variant_id == remake.id)).all()
+    for slot in slots:
+        if slot.status == "published":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="remake was already published from a plan slot — cannot un-approve",
+            )
+    for slot in slots:
+        slot.variant_id = None
+        slot.status = "empty"
+        session.add(slot)
+
+    remake.status = "final_review"
+    remake.final_approved_at = None
+    remake.final_approved_by = None
+    remake.final_media_asset_id = None
+    session.add(remake)
+    session.flush()
+    session.refresh(remake)
+    logger.info("remake_final_unapproved", remake_id=str(remake.id), detached_slots=len(slots))
+    return remake
+
+
 def archive(session: Session, remake: Remake) -> Remake:
     remake.status = "archived"
     session.add(remake)
