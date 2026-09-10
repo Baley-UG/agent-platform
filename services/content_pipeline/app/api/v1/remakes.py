@@ -267,6 +267,18 @@ def reject_final(
     return RemakeRead.model_validate(remake, from_attributes=True)
 
 
+@router.post("/{remake_id}/reopen", response_model=RemakeDetail)
+def reopen(
+    remake_id: uuid.UUID,
+    project: Project = Depends(get_project),
+    session: Session = Depends(get_session),
+) -> RemakeDetail:
+    """rejected → final_review: bring a rejected remake back to Gate 2."""
+    remake = svc.get(session, project.id, remake_id)
+    svc.reopen_final(session, remake)
+    return _detail(session, remake)
+
+
 @router.post("/{remake_id}/unapprove-final", response_model=RemakeDetail)
 def unapprove_final(
     remake_id: uuid.UUID,

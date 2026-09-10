@@ -526,6 +526,24 @@ def reject_final(session: Session, remake: Remake, *, reason: Optional[str] = No
     return remake
 
 
+def reopen_final(session: Session, remake: Remake) -> Remake:
+    """Bring a rejected remake back to Gate 2 (final_review) — the
+    rejection was a mistake or the verdict changed."""
+    if remake.status != "rejected":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"cannot reopen from status={remake.status}",
+        )
+    if not remake.final_s3_key:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="remake has no composed output")
+    remake.status = "final_review"
+    session.add(remake)
+    session.flush()
+    session.refresh(remake)
+    logger.info("remake_final_reopened", remake_id=str(remake.id))
+    return remake
+
+
 def unapprove_final(session: Session, remake: Remake) -> Remake:
     """Revert a mistaken Gate-2 approval: done → final_review.
 
