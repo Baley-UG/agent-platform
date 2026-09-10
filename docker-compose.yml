@@ -25,6 +25,7 @@ services:
 
   # Single API service with dynamic environment
   app:
+    image: ghcr.io/baley-ug/agent-platform-app:${AGENT_PLATFORM_TAG:-master}
     build:
       context: .
       args:
@@ -167,6 +168,7 @@ services:
   # ig_scraper microservice — three roles, same image
   # --------------------------------------------------------------------
   ig-scraper-api:
+    image: ghcr.io/baley-ug/agent-platform-ig-scraper:${AGENT_PLATFORM_TAG:-master}
     build:
       context: ./services/ig_scraper
       args:
@@ -195,6 +197,7 @@ services:
       - monitoring
 
   ig-scraper-worker:
+    image: ghcr.io/baley-ug/agent-platform-ig-scraper:${AGENT_PLATFORM_TAG:-master}
     build:
       context: ./services/ig_scraper
       args:
@@ -213,6 +216,7 @@ services:
       - monitoring
 
   ig-scraper-scheduler:
+    image: ghcr.io/baley-ug/agent-platform-ig-scraper:${AGENT_PLATFORM_TAG:-master}
     build:
       context: ./services/ig_scraper
       args:
@@ -252,6 +256,7 @@ services:
   # content_pipeline microservice — four roles, two images
   # --------------------------------------------------------------------
   content-pipeline-api:
+    image: ghcr.io/baley-ug/agent-platform-content-pipeline:${AGENT_PLATFORM_TAG:-master}
     build:
       context: ./services/content_pipeline
       args:
@@ -282,6 +287,7 @@ services:
       - monitoring
 
   content-pipeline-worker:
+    image: ghcr.io/baley-ug/agent-platform-content-pipeline:${AGENT_PLATFORM_TAG:-master}
     build:
       context: ./services/content_pipeline
       args:
@@ -303,6 +309,7 @@ services:
       - monitoring
 
   content-pipeline-render:
+    image: ghcr.io/baley-ug/agent-platform-content-pipeline:${AGENT_PLATFORM_TAG:-master}
     build:
       context: ./services/content_pipeline
       dockerfile: Dockerfile.ffmpeg
@@ -324,6 +331,7 @@ services:
       - monitoring
 
   content-pipeline-scheduler:
+    image: ghcr.io/baley-ug/agent-platform-content-pipeline:${AGENT_PLATFORM_TAG:-master}
     build:
       context: ./services/content_pipeline
       args:
@@ -350,6 +358,7 @@ services:
   # through POST /api/v1/jobs.
   # --------------------------------------------------------------------
   ad-scraper-api:
+    image: ghcr.io/baley-ug/agent-platform-ad-scraper:${AGENT_PLATFORM_TAG:-master}
     build:
       context: ./services/ad_scraper
       args:
@@ -378,6 +387,7 @@ services:
       - monitoring
 
   ad-scraper-worker:
+    image: ghcr.io/baley-ug/agent-platform-ad-scraper:${AGENT_PLATFORM_TAG:-master}
     build:
       context: ./services/ad_scraper
       args:
