@@ -440,6 +440,92 @@ def _build_server():
         )
         return payload if err is None else {"error": err}
 
+    @mcp.tool()
+    def list_remakes(
+        project_id: str,
+        status: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """List a project's remakes (newest first). `status` filters by
+        pipeline state: analyzing | plan_review | rendering |
+        needs_attention | final_review | done | rejected | archived.
+        Rows carry id, reference_id, reference_title, status, costs and
+        timestamps — use get_remake for the full detail."""
+        payload, err = _cp_request(
+            "GET", f"/projects/{project_id}/remakes",
+            params={k: v for k, v in {"status": status, "limit": limit, "offset": offset}.items() if v is not None},
+        )
+        if err is not None:
+            return [{"error": err}]
+        rows = payload if isinstance(payload, list) else []
+        # Trim the heavy plan_json from list rows — get_remake has it.
+        for r in rows:
+            r.pop("plan_json", None)
+        return rows
+
+    @mcp.tool()
+    def get_remake(project_id: str, remake_id: str) -> Dict[str, Any]:
+        """Full remake detail: status, shots, steps, progress, costs,
+        reject reason (`error`), plus presigned `final_url` (the
+        composed/uploaded video) and `source_url` (the reference video)
+        valid ~1h."""
+        payload, err = _cp_request("GET", f"/projects/{project_id}/remakes/{remake_id}")
+        if err is not None:
+            return {"error": err}
+        # The per-second thumbnail strips are for the panel timeline —
+        # dozens of URLs of noise in an agent context.
+        payload.pop("filmstrip", None)
+        return payload
+
+    @mcp.tool()
+    def approve_remake_final(project_id: str, remake_id: str) -> Dict[str, Any]:
+        """Approve a remake at Gate 2 (final_review → done). This is a
+        human approval gate — only call it when the operator explicitly
+        asked for the approval."""
+        payload, err = _cp_request(
+            "POST", f"/projects/{project_id}/remakes/{remake_id}/approve-final",
+            json_body={},
+        )
+        return payload if err is None else {"error": err}
+
+    @mcp.tool()
+    def reject_remake_final(
+        project_id: str, remake_id: str, reason: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Reject a remake at Gate 2 (final_review → rejected). The
+        optional `reason` is stored and shown on the remake. Reversible
+        via reopen_remake. Only call on the operator's explicit ask."""
+        payload, err = _cp_request(
+            "POST", f"/projects/{project_id}/remakes/{remake_id}/reject-final",
+            json_body={"reason": reason},
+        )
+        return payload if err is None else {"error": err}
+
+    @mcp.tool()
+    def reopen_remake(project_id: str, remake_id: str) -> Dict[str, Any]:
+        """Bring a rejected remake back to Gate 2 (rejected →
+        final_review) — e.g. after fixing the issue in `error`."""
+        payload, err = _cp_request(
+            "POST", f"/projects/{project_id}/remakes/{remake_id}/reopen",
+        )
+        if err is not None:
+            return {"error": err}
+        payload.pop("filmstrip", None)
+        return payload
+
+    @mcp.tool()
+    def retry_remake(project_id: str, remake_id: str) -> Dict[str, Any]:
+        """Recover a needs_attention remake: resets every failed step
+        (shot-scoped and global) and resumes the pipeline."""
+        payload, err = _cp_request(
+            "POST", f"/projects/{project_id}/remakes/{remake_id}/retry",
+        )
+        if err is not None:
+            return {"error": err}
+        payload.pop("filmstrip", None)
+        return payload
+
     return mcp
 
 
