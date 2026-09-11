@@ -56,6 +56,7 @@ def _enrich(session: Session, payloads, remakes) -> None:
         if ref is None:
             continue
         payload.reference_title = ref.title or (ref.caption or "")[:80] or None
+        payload.reference_tags = list(ref.tags) if ref.tags else None
         key = ref.poster_s3_key or (
             ref.media_s3_key
             if (ref.media_s3_key or "").lower().endswith((".jpg", ".jpeg", ".png", ".webp"))

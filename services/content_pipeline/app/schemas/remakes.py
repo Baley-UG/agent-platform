@@ -104,6 +104,9 @@ class RemakeRead(BaseModel):
     # thumb for list cards and the reference's human name.
     poster_url: Optional[str] = None
     reference_title: Optional[str] = None
+    # The source reference's operator tags — remakes inherit them so the
+    # remakes list can filter by the same taxonomy.
+    reference_tags: Optional[List[str]] = None
 
     model_config = {"from_attributes": True}
 
