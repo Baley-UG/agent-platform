@@ -316,6 +316,41 @@ def _build_server():
         return {"reference_id": payload.get("id"), "title": payload.get("title")}
 
     @mcp.tool()
+    def tag_reference(
+        project_id: str,
+        reference_id: str,
+        tags: List[str],
+        mode: str = "add",
+    ) -> Dict[str, Any]:
+        """Manage a reference's tags (operator taxonomy — one-click
+        filters in the panel; distinct from scraped hashtags).
+        `mode`: "add" (default) merges into the existing set, "remove"
+        deletes the given ones, "replace" overwrites the whole set.
+        Tags are lowercased and deduplicated."""
+        clean = [t.strip().lower() for t in tags if t and t.strip()]
+        if mode not in ("add", "remove", "replace"):
+            return {"error": "mode must be add | remove | replace"}
+        if mode == "replace":
+            new_tags = list(dict.fromkeys(clean))
+        else:
+            current, err = _cp_request("GET", f"/projects/{project_id}/references/{reference_id}")
+            if err is not None:
+                return {"error": err}
+            existing = [t for t in (current.get("tags") or [])]
+            if mode == "add":
+                new_tags = list(dict.fromkeys(existing + clean))
+            else:  # remove
+                drop = set(clean)
+                new_tags = [t for t in existing if t not in drop]
+        payload, err = _cp_request(
+            "PATCH", f"/projects/{project_id}/references/{reference_id}",
+            json_body={"tags": new_tags},
+        )
+        if err is not None:
+            return {"error": err}
+        return {"reference_id": payload.get("id"), "tags": payload.get("tags")}
+
+    @mcp.tool()
     def list_projects() -> List[Dict[str, Any]]:
         """The platform's projects (brands/tenants). Call this FIRST when
         the user names a project ("X projesine aktar") — every
@@ -377,6 +412,7 @@ def _build_server():
             out.append({
                 "reference_id": r.get("id"),
                 "title": r.get("title"),
+                "tags": r.get("tags"),
                 "source_provider": r.get("source_provider"),
                 "source_external_id": r.get("source_external_id"),
                 "caption": (r.get("caption") or "")[:160],
