@@ -265,7 +265,11 @@ def _build_server():
         try:
             resp = httpx.request(
                 method, url, json=json_body, params=params,
-                headers={"X-API-Key": settings.CP_API_KEY}, timeout=timeout,
+                # X-Acting-User → imported_by/created_by stamps, so the
+                # panel's "Added by" filter separates agent imports from
+                # human ones (the gateway sends the human's email there).
+                headers={"X-API-Key": settings.CP_API_KEY, "X-Acting-User": "mcp-agent"},
+                timeout=timeout,
             )
         except httpx.HTTPError as exc:
             return None, f"content_pipeline unreachable: {exc}"

@@ -149,6 +149,7 @@ async def _proxy(
     base_url: str,
     api_key: str,
     path: str,
+    acting_user: Optional[str] = None,
 ) -> Response:
     """Forward `request` to `<base_url>/api/v1/<path>` with X-API-Key."""
     url = f"{base_url.rstrip('/')}/api/v1/{path.lstrip('/')}"
@@ -164,6 +165,12 @@ async def _proxy(
     }
     forward_headers["X-API-Key"] = api_key
     forward_headers["X-Forwarded-By"] = "agent-platform-gateway"
+    # WHO acted, not just which service: downstream writes stamp this
+    # into imported_by / created_by so the panel can filter by person.
+    if acting_user:
+        forward_headers["X-Acting-User"] = acting_user
+    else:
+        forward_headers.pop("X-Acting-User", None)
 
     try:
         upstream = await _httpx_client().request(
@@ -239,6 +246,7 @@ async def proxy_content_pipeline(
         base_url=settings.CONTENT_PIPELINE_URL,
         api_key=settings.CONTENT_PIPELINE_API_KEY,
         path=path,
+        acting_user=principal.user.email,
     )
 
 

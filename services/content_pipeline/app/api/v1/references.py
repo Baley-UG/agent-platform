@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Header, Query, status
 from sqlmodel import Session
 
 from app.api.v1.deps import get_project, get_session, require_api_key
@@ -33,13 +33,16 @@ def upload(
     payload: ReferenceManualUpload,
     project: Project = Depends(get_project),
     session: Session = Depends(get_session),
+    x_acting_user: Optional[str] = Header(default=None),
 ) -> ReferenceRead:
     """Register a reference whose media bytes have already been PUT to S3.
 
     Typical flow: admin calls `/assets/upload-url`, PUTs the file, then calls
     this endpoint with the returned `s3_key`.
     """
-    return svc.to_read(svc.manual_upload(session, project.id, payload), session=session)
+    return svc.to_read(
+        svc.manual_upload(session, project.id, payload, created_by=x_acting_user), session=session
+    )
 
 
 @router.post("/import-from-scraper", response_model=ReferenceRead, status_code=status.HTTP_201_CREATED)
@@ -47,9 +50,12 @@ def import_from_scraper(
     payload: ReferenceImportFromScraper,
     project: Project = Depends(get_project),
     session: Session = Depends(get_session),
+    x_acting_user: Optional[str] = Header(default=None),
 ) -> ReferenceRead:
     """Pull an `ig_scraper.ig_posts` row into the reference pool by media pk."""
-    return svc.to_read(svc.import_from_scraper(session, project.id, payload), session=session)
+    return svc.to_read(
+        svc.import_from_scraper(session, project.id, payload, created_by=x_acting_user), session=session
+    )
 
 
 @router.post("/import-from-ads", response_model=ReferenceRead, status_code=status.HTTP_201_CREATED)
@@ -57,6 +63,7 @@ def import_from_ads(
     payload: ReferenceImportFromAds,
     project: Project = Depends(get_project),
     session: Session = Depends(get_session),
+    x_acting_user: Optional[str] = Header(default=None),
 ) -> ReferenceRead:
     """Pull an `ad_scraper.ad_materials` row into the reference pool.
 
@@ -65,7 +72,9 @@ def import_from_ads(
     `asr` transcript and its impression / days-on-air metrics land in
     `metadata` for the analyzer and for auto-generation ranking.
     """
-    return svc.to_read(svc.import_from_ads(session, project.id, payload), session=session)
+    return svc.to_read(
+        svc.import_from_ads(session, project.id, payload, created_by=x_acting_user), session=session
+    )
 
 
 @router.get("", response_model=List[ReferenceRead])
