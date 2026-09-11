@@ -55,6 +55,9 @@ class ContentReference(SQLModel, table=True):
     caption: Optional[str] = Field(default=None, sa_column=sa.Column(sa.Text, nullable=True))
     transcript: Optional[str] = Field(default=None, sa_column=sa.Column(sa.Text, nullable=True))
     hashtags: Optional[List[str]] = Field(default=None, sa_column=sa.Column(ARRAY(sa.Text), nullable=True))
+    # Operator-assigned labels (vs `hashtags`, scraped from the post) —
+    # one-click filters in the panel.
+    tags: Optional[List[str]] = Field(default=None, sa_column=sa.Column(ARRAY(sa.Text), nullable=True))
 
     metadata_json: Optional[dict] = Field(default=None, sa_column=sa.Column("metadata", JSONB, nullable=True))
 

@@ -16,6 +16,7 @@ from app.api.v1.deps import get_project, get_session, require_api_key
 from app.models.projects import Project
 from app.schemas.remakes import (
     ApproveFinalRequest,
+    RejectFinalRequest,
     PlanPatch,
     RemakeCreate,
     RemakeDetail,
@@ -257,13 +258,14 @@ def approve_final(
 @router.post("/{remake_id}/reject-final", response_model=RemakeRead)
 def reject_final(
     remake_id: uuid.UUID,
+    payload: Optional[RejectFinalRequest] = None,
     project: Project = Depends(get_project),
     session: Session = Depends(get_session),
 ) -> RemakeRead:
     """Gate-2 rejection: final_review → rejected (terminal, distinct
-    from archived so it can be filtered/audited)."""
+    from archived so it can be filtered/audited). Optional {reason}."""
     remake = svc.get(session, project.id, remake_id)
-    svc.reject_final(session, remake)
+    svc.reject_final(session, remake, reason=payload.reason if payload else None)
     return RemakeRead.model_validate(remake, from_attributes=True)
 
 

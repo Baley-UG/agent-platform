@@ -69,6 +69,7 @@ def to_read(
     # finished should say so without the operator opening the remake.
     remakes_count = 0
     remakes_done_count = 0
+    remakes_rejected_count = 0
     if session is not None:
         from sqlalchemy import case, func
         from app.models.remakes import Remake
@@ -77,15 +78,19 @@ def to_read(
             select(
                 func.count(Remake.id),
                 func.coalesce(func.sum(case((Remake.status == "done", 1), else_=0)), 0),
+                func.coalesce(func.sum(case((Remake.status == "rejected", 1), else_=0)), 0),
             ).where(Remake.reference_id == ref.id)
         ).one()
-        remakes_count, remakes_done_count = int(row[0] or 0), int(row[1] or 0)
+        remakes_count = int(row[0] or 0)
+        remakes_done_count = int(row[1] or 0)
+        remakes_rejected_count = int(row[2] or 0)
 
     payload = ReferenceRead.model_validate(ref)
     payload.media_url = media_url
     payload.poster_url = poster_url
     payload.remakes_count = remakes_count
     payload.remakes_done_count = remakes_done_count
+    payload.remakes_rejected_count = remakes_rejected_count
     return payload
 
 

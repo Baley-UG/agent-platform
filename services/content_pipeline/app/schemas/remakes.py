@@ -160,3 +160,10 @@ class ShotRejectRequest(BaseModel):
 
 class ApproveFinalRequest(BaseModel):
     plan_slot_id: Optional[uuid.UUID] = None
+
+
+class RejectFinalRequest(BaseModel):
+    """Optional human note on WHY the final was rejected — stored on
+    the remake and shown on its detail page."""
+
+    reason: Optional[str] = Field(default=None, max_length=500)

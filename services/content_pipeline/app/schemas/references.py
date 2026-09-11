@@ -88,6 +88,7 @@ class ReferenceUpdate(BaseModel):
     caption: Optional[str] = None
     transcript: Optional[str] = None
     hashtags: Optional[List[str]] = None
+    tags: Optional[List[str]] = None
     metadata: Optional[dict] = None
 
 
@@ -111,6 +112,7 @@ class ReferenceRead(BaseModel):
     caption: Optional[str]
     transcript: Optional[str]
     hashtags: Optional[List[str]]
+    tags: Optional[List[str]] = None
     # When reading from the ORM object, look for `metadata_json` (the
     # real column). Do NOT alias to "metadata" — it collides with
     # SQLAlchemy's class-level `Base.metadata` MetaData object and
@@ -130,6 +132,7 @@ class ReferenceRead(BaseModel):
     remakes_count: int = 0
     # How many of those remakes reached `done` — drives the Produced badge.
     remakes_done_count: int = 0
+    remakes_rejected_count: int = 0
 
     model_config = {"from_attributes": True, "populate_by_name": True}
 

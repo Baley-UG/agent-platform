@@ -537,6 +537,7 @@ def reopen_final(session: Session, remake: Remake) -> Remake:
     if not remake.final_s3_key:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="remake has no composed output")
     remake.status = "final_review"
+    remake.error = None  # the rejection reason no longer applies
     session.add(remake)
     session.flush()
     session.refresh(remake)
