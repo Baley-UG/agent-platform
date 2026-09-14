@@ -104,11 +104,19 @@ def get(session: Session, project_id: uuid.UUID, remake_id: uuid.UUID) -> Remake
 
 
 def list_(
-    session: Session, project_id: uuid.UUID, *, status_: Optional[str] = None, limit: int = 50, offset: int = 0
+    session: Session,
+    project_id: uuid.UUID,
+    *,
+    status_: Optional[str] = None,
+    reference_id: Optional[uuid.UUID] = None,
+    limit: int = 50,
+    offset: int = 0,
 ) -> List[Remake]:
     stmt = select(Remake).where(Remake.project_id == project_id)
     if status_:
         stmt = stmt.where(Remake.status == status_)
+    if reference_id:
+        stmt = stmt.where(Remake.reference_id == reference_id)
     stmt = stmt.order_by(Remake.created_at.desc()).limit(limit).offset(offset)
     return list(session.exec(stmt).all())
 

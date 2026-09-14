@@ -158,12 +158,15 @@ def import_external(
 @router.get("", response_model=List[RemakeRead])
 def list_(
     status_: Optional[str] = Query(default=None, alias="status"),
+    reference_id: Optional[uuid.UUID] = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     project: Project = Depends(get_project),
     session: Session = Depends(get_session),
 ) -> List[RemakeRead]:
-    rows = svc.list_(session, project.id, status_=status_, limit=limit, offset=offset)
+    rows = svc.list_(
+        session, project.id, status_=status_, reference_id=reference_id, limit=limit, offset=offset
+    )
     payloads = [RemakeRead.model_validate(r, from_attributes=True) for r in rows]
     _enrich(session, payloads, rows)
     return payloads
