@@ -252,6 +252,9 @@ services:
   # content_pipeline microservice — four roles, two images
   # --------------------------------------------------------------------
   content-pipeline-api:
+    # Paused vertical: not started by a plain `docker compose up -d`.
+    # Re-enable with `docker compose --profile pipeline up -d`.
+    profiles: ["pipeline"]
     build:
       context: ./services/content_pipeline
       args:
@@ -282,6 +285,9 @@ services:
       - monitoring
 
   content-pipeline-worker:
+    # Paused vertical: not started by a plain `docker compose up -d`.
+    # Re-enable with `docker compose --profile pipeline up -d`.
+    profiles: ["pipeline"]
     build:
       context: ./services/content_pipeline
       args:
@@ -303,6 +309,9 @@ services:
       - monitoring
 
   content-pipeline-render:
+    # Paused vertical: not started by a plain `docker compose up -d`.
+    # Re-enable with `docker compose --profile pipeline up -d`.
+    profiles: ["pipeline"]
     build:
       context: ./services/content_pipeline
       dockerfile: Dockerfile.ffmpeg
@@ -324,6 +333,9 @@ services:
       - monitoring
 
   content-pipeline-scheduler:
+    # Paused vertical: not started by a plain `docker compose up -d`.
+    # Re-enable with `docker compose --profile pipeline up -d`.
+    profiles: ["pipeline"]
     build:
       context: ./services/content_pipeline
       args:
@@ -350,6 +362,9 @@ services:
   # through POST /api/v1/jobs.
   # --------------------------------------------------------------------
   ad-scraper-api:
+    # Paused vertical: not started by a plain `docker compose up -d`.
+    # Re-enable with `docker compose --profile pipeline up -d`.
+    profiles: ["pipeline"]
     build:
       context: ./services/ad_scraper
       args:
@@ -378,6 +393,9 @@ services:
       - monitoring
 
   ad-scraper-worker:
+    # Paused vertical: not started by a plain `docker compose up -d`.
+    # Re-enable with `docker compose --profile pipeline up -d`.
+    profiles: ["pipeline"]
     build:
       context: ./services/ad_scraper
       args:
